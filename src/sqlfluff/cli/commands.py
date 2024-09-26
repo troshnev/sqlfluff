@@ -526,7 +526,7 @@ def dump_file_payload(filename: Optional[str], payload: str) -> None:
     """Write the output file content to stdout or file."""
     # If there's a file specified to write to, write to it.
     if filename:
-        with open(filename, "w") as out_file:
+        with open(filename, "w", encoding="utf8") as out_file:
             out_file.write(payload)
     # Otherwise write to stdout
     else:
@@ -660,7 +660,7 @@ def lint(
         click.echo(formatter.format_linting_stats(result, verbose=verbose))
 
     if format == FormatType.json.value:
-        file_output = json.dumps(result.as_records())
+        file_output = json.dumps(result.as_records(), ensure_ascii=False)
     elif format == FormatType.yaml.value:
         file_output = yaml.dump(
             result.as_records(),
@@ -707,7 +707,7 @@ def lint(
                         ),
                     }
                 )
-        file_output = json.dumps(github_result)
+        file_output = json.dumps(github_result, ensure_ascii=False)
     elif format == FormatType.github_annotation_native.value:
         if annotation_level == "failure":
             annotation_level = "error"
@@ -1404,7 +1404,7 @@ def parse(
                 allow_unicode=True,
             )
         elif format == FormatType.json.value:
-            file_output = json.dumps(parsed_strings_dict)
+            file_output = json.dumps(parsed_strings_dict, ensure_ascii=False)
         elif format == FormatType.none.value:
             file_output = ""
 

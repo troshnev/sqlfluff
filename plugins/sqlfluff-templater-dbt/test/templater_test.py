@@ -408,9 +408,12 @@ def test__dbt_templated_models_fix_does_not_corrupt_file(
         lnt = lntr.lint_path(os.path.join(project_dir, path), fix=True)
     try:
         lnt.persist_changes(fixed_file_suffix="FIXED")
-        with open(os.path.join(project_dir, path + ".after")) as f:
+        with open(os.path.join(project_dir, path + ".after"), encoding="utf8") as f:
             comp_buff = f.read()
-        with open(os.path.join(project_dir, path.replace(".sql", "FIXED.sql"))) as f:
+        with open(
+            os.path.join(project_dir, path.replace(".sql", "FIXED.sql")),
+            encoding="utf8",
+        ) as f:
             fixed_buff = f.read()
         assert fixed_buff == comp_buff
     finally:

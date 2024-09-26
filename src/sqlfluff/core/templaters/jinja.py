@@ -161,7 +161,7 @@ class JinjaTemplater(PythonTemplater):
                     ):
                         continue
                 # It's a file. Extract macros from it.
-                with open(path_entry) as opened_file:
+                with open(path_entry, encoding="utf8") as opened_file:
                     template = opened_file.read()
                 # Update the context with macros from the file.
                 try:

@@ -35,7 +35,7 @@ def load_test_cases(
     test_cases = []
 
     for path in sorted(glob(test_cases_path)):
-        with open(path) as f:
+        with open(path, encoding="utf8") as f:
             raw = f.read()
 
         y = yaml.safe_load(raw)

@@ -204,9 +204,9 @@ def release(new_version_num):
 
     click.echo("Updating plugins/sqlfluff-templater-dbt/pyproject.toml")
     for filename in ["plugins/sqlfluff-templater-dbt/pyproject.toml"]:
-        input_file = open(filename, "r").readlines()
+        input_file = open(filename, "r", encoding="utf8").readlines()
         # Regardless of platform, write newlines as \n
-        write_file = open(filename, "w", newline="\n")
+        write_file = open(filename, "w", newline="\n", encoding="utf8")
         for line in input_file:
             if line.startswith("version"):
                 line = f'version = "{new_version_num}"\n'
@@ -222,9 +222,9 @@ def release(new_version_num):
 
     click.echo("Updating pyproject.toml")
     for filename in ["pyproject.toml"]:
-        input_file = open(filename, "r").readlines()
+        input_file = open(filename, "r", encoding="utf8").readlines()
         # Regardless of platform, write newlines as \n
-        write_file = open(filename, "w", newline="\n")
+        write_file = open(filename, "w", newline="\n", encoding="utf8")
         for line in input_file:
             for key in keys:
                 if line.startswith(key):
@@ -237,9 +237,9 @@ def release(new_version_num):
     if not is_pre_release:
         click.echo("Updating gettingstarted.rst")
         for filename in ["docs/source/gettingstarted.rst"]:
-            input_file = open(filename, "r").readlines()
+            input_file = open(filename, "r", encoding="utf8").readlines()
             # Regardless of platform, write newlines as \n
-            write_file = open(filename, "w", newline="\n")
+            write_file = open(filename, "w", newline="\n", encoding="utf8")
             change_next_line = False
             for line in input_file:
                 if change_next_line:

@@ -207,7 +207,8 @@ def test__config__from_kwargs():
 def test__config__from_string():
     """Test from_string method of FluffConfig."""
     with open(
-        os.path.join("test", "fixtures", "config", "inheritance_a", ".sqlfluff")
+        os.path.join("test", "fixtures", "config", "inheritance_a", ".sqlfluff"),
+        encoding="utf8",
     ) as f:
         config_string = f.read()
     cfg = FluffConfig.from_string(config_string)

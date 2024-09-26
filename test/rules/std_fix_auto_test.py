@@ -74,7 +74,7 @@ def auto_fix_test(dialect, folder, caplog):
     )
 
     # Load the config file for the test:
-    with open(test_conf_filepath) as cfg_file:
+    with open(test_conf_filepath, encoding="utf8") as cfg_file:
         cfg = yaml.safe_load(cfg_file)
     print("## Config: ", cfg)
     rules: Optional[str] = ",".join(cfg["test-config"].get("rules")).upper()
@@ -86,15 +86,15 @@ def auto_fix_test(dialect, folder, caplog):
 
     # Open the example file and write the content to it
     print_buff = ""
-    with open(filepath, mode="w") as dest_file:
-        with open(src_filepath) as source_file:
+    with open(filepath, mode="w", encoding="utf8") as dest_file:
+        with open(src_filepath, encoding="utf8") as source_file:
             for line in source_file:
                 dest_file.write(line)
                 print_buff += line
     # Copy the config file too
     try:
-        with open(cfgpath, mode="w") as dest_file:
-            with open(cfg_filepath) as source_file:
+        with open(cfgpath, mode="w", encoding="utf8") as dest_file:
+            with open(cfg_filepath, encoding="utf8") as source_file:
                 print("## Config File Found.")
                 for line in source_file:
                     dest_file.write(line)
@@ -105,7 +105,7 @@ def auto_fix_test(dialect, folder, caplog):
     print(f"## Input file:\n{print_buff}")
     # Do we need to do a violations check?
     try:
-        with open(vio_filepath) as vio_file:
+        with open(vio_filepath, encoding="utf8") as vio_file:
             violations = json.load(vio_file)
     except FileNotFoundError:
         # No violations file. Let's not worry
@@ -147,14 +147,14 @@ def auto_fix_test(dialect, folder, caplog):
     # Actually do the fixes
     res = res.persist_changes()
     # Read the fixed file
-    with open(filepath) as fixed_file:
+    with open(filepath, encoding="utf8") as fixed_file:
         fixed_buff = fixed_file.read()
     # Clear up once read
     shutil.rmtree(tempdir_path)
     # Also clear the config cache again so it's not polluted for later tests.
     clear_config_caches()
     # Read the comparison file
-    with open(cmp_filepath) as comp_file:
+    with open(cmp_filepath, encoding="utf8") as comp_file:
         comp_buff = comp_file.read()
 
     # Make sure we were successful
