@@ -47,7 +47,7 @@ def _load_raw_file_as_dict(filepath: str) -> ConfigMappingType:
     if filename == "pyproject.toml":
         return load_toml_file_config(filepath)
     # If it's not a pyproject file, assume that it's an ini file.
-    with open(filepath, mode="r") as file:
+    with open(filepath, mode="r", encoding="utf8") as file:
         return load_ini_string(file.read())
 
 

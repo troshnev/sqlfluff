@@ -157,7 +157,7 @@ class LintingResult:
 
         rule_codes -= set(timing_fields)
 
-        with open(filename, "w", newline="") as f:
+        with open(filename, "w", newline="", encoding="utf8") as f:
             writer = csv.DictWriter(
                 # Metadata first, then step timings and then _sorted_ rule codes.
                 f,

@@ -44,7 +44,8 @@ def test__config__load_from_string():
     """Test loading config from a string."""
     # Load a string
     with open(
-        os.path.join("test", "fixtures", "config", "inheritance_a", ".sqlfluff")
+        os.path.join("test", "fixtures", "config", "inheritance_a", ".sqlfluff"),
+        encoding="utf8",
     ) as f:
         config_string = f.read()
     cfg = load_config_string(config_string)

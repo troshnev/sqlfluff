@@ -48,7 +48,7 @@ class FileOutput(OutputStream):
 
     def __init__(self, config: FluffConfig, output_path: str) -> None:
         super().__init__(config)
-        self.file = open(output_path, "w")
+        self.file = open(output_path, "w", encoding="utf8")
 
     def write(self, message: str) -> None:
         """Write message to output_path."""

@@ -359,7 +359,7 @@ def test__cli__command_lint_stdin(command):
 
     The subprocess command should exit without errors, as no issues should be found.
     """
-    with open("test/fixtures/cli/passing_a.sql") as test_file:
+    with open("test/fixtures/cli/passing_a.sql", encoding="utf8") as test_file:
         sql = test_file.read()
     invoke_assert_code(args=[lint, ("--dialect=ansi",) + command], cli_input=sql)
 
@@ -374,7 +374,7 @@ def test__cli__command_lint_empty_stdin():
 
 def test__cli__command_render_stdin():
     """Check render on a simple script using stdin."""
-    with open("test/fixtures/cli/passing_a.sql") as test_file:
+    with open("test/fixtures/cli/passing_a.sql", encoding="utf8") as test_file:
         sql = test_file.read()
 
     invoke_assert_code(
@@ -835,7 +835,7 @@ def test__cli__command_versioning():
     # Get the package version info
     pkg_version = sqlfluff.__version__
     # Get the version info from the config file
-    with open("pyproject.toml", "r") as config_file:
+    with open("pyproject.toml", "r", encoding="utf8") as config_file:
         config = tomllib.loads(config_file.read())
     config_version = config["project"]["version"]
     assert pkg_version == config_version
@@ -941,7 +941,7 @@ def generic_roundtrip_test(
 )
 def test__cli__command__fix(rule, fname):
     """Test the round trip of detecting, fixing and then not detecting the rule."""
-    with open(fname) as test_file:
+    with open(fname, encoding="utf8") as test_file:
         generic_roundtrip_test(test_file, rule)
 
 
@@ -1119,7 +1119,7 @@ def test_cli_fix_even_unparsable(
     """Test the fix_even_unparsable option works from cmd line and config."""
     sql_filename = "fix_even_unparsable.sql"
     sql_path = str(tmpdir / sql_filename)
-    with open(sql_path, "w") as f:
+    with open(sql_path, "w", encoding="utf8") as f:
         print(
             """SELECT my_col
 FROM my_schema.my_table
@@ -1138,7 +1138,7 @@ where processdate ! 3
             options.append("--FIX-EVEN-UNPARSABLE")
     else:
         assert method == "config-file"
-        with open(str(tmpdir / ".sqlfluff"), "w") as f:
+        with open(str(tmpdir / ".sqlfluff"), "w", encoding="utf8") as f:
             print(
                 f"[sqlfluff]\nfix_even_unparsable = {fix_even_unparsable}",
                 file=f,
@@ -1157,7 +1157,7 @@ where processdate ! 3
     )
     fixed_path = str(tmpdir / "fix_even_unparsableFIXED.sql")
     if fix_even_unparsable:
-        with open(fixed_path, "r") as f:
+        with open(fixed_path, "r", encoding="utf8") as f:
             fixed_sql = f.read()
             assert (
                 fixed_sql
@@ -1307,7 +1307,7 @@ def test__cli__command_fix_stdin_error_exit_code(
 )
 def test__cli__command__fix_check(rule, fname, prompt, exit_code, fix_exit_code):
     """Round trip test, using the prompts."""
-    with open(fname) as test_file:
+    with open(fname, encoding="utf8") as test_file:
         generic_roundtrip_test(
             test_file,
             rule,
@@ -1339,7 +1339,7 @@ def test__cli__command_parse_serialize_from_stdin(serialize, write_file, tmp_pat
     )
 
     if write_file:
-        with open(target_file, "r") as payload_file:
+        with open(target_file, "r", encoding="utf8") as payload_file:
             result_payload = payload_file.read()
     else:
         result_payload = result.output
@@ -1579,7 +1579,7 @@ def test__cli__command_lint_nocolor(isatty, should_strip_ansi, capsys, tmpdir):
         lint(cmd_args)
     out = capsys.readouterr()[0]
     assert not contains_ansi_escape(out)
-    with open(output_file, "r") as f:
+    with open(output_file, "r", encoding="utf8") as f:
         file_contents = f.read()
     assert not contains_ansi_escape(file_contents)
 
@@ -1621,7 +1621,7 @@ def test__cli__command_lint_serialize_multiple_files(serialize, write_file, tmp_
 
     # NOTE: The "none" serializer doesn't write a file even if specified.
     if write_file and serialize != "none":
-        with open(target_file, "r") as payload_file:
+        with open(target_file, "r", encoding="utf8") as payload_file:
             result_payload = payload_file.read()
     else:
         result_payload = result.output
@@ -1904,7 +1904,11 @@ def test___main___help():
 )
 def test_encoding(encoding_in, encoding_out):
     """Check the encoding of the test file remains the same after fix is applied."""
-    with open("test/fixtures/linter/indentation_errors.sql", "r") as testfile:
+    with open(
+        "test/fixtures/linter/indentation_errors.sql",
+        mode="r",
+        encoding="utf8",
+    ) as testfile:
         generic_roundtrip_test(
             testfile,
             "LT01",
@@ -1929,7 +1933,7 @@ def test_cli_encoding(encoding, method, expect_success, tmpdir):
         options = [sql_path, "--encoding", encoding]
     else:
         assert method == "config-file"
-        with open(str(tmpdir / ".sqlfluff"), "w") as f:
+        with open(str(tmpdir / ".sqlfluff"), "w", encoding="utf8") as f:
             print(f"[sqlfluff]\ndialect=ansi\nencoding = {encoding}", file=f)
         shutil.copy(sql_path, tmpdir)
         options = [str(tmpdir / "encoding_test.sql")]
