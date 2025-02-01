@@ -127,7 +127,8 @@ disabled by default. The rules that support this can be found in the
 
 The default values can be seen in :ref:`defaultconfig`.
 
-See also: :ref:`ignoreconfig`.
+See :ref:`ignoreconfig` for more information on how to turn ignore particular
+rules for specific lines, sections or files.
 
 Downgrading rules to warnings
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -160,6 +161,8 @@ the file will still fail, but will show both warnings and failures.
 This is particularly useful as a transitional tool when considering
 the introduction on new rules on a project where you might want to
 make users aware of issues without blocking their workflow (yet).
+
+You can use either rule code or rule name for this setting.
 
 Layout & Spacing Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

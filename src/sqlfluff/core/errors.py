@@ -37,6 +37,7 @@ class SQLBaseError(ValueError):
     """Base Error Class for all violations."""
 
     _code: Optional[str] = None
+    _name: Optional[str] = None
     _identifier = "base"
     _warning = False  # The default value for `warning`
 
@@ -61,7 +62,7 @@ class SQLBaseError(ValueError):
             self.line_pos = line_pos
         super().__init__(self.desc())
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: Any) -> bool:
         """Errors compare equal if they are the same type and same content."""
         if not isinstance(other, self.__class__):
             return False
@@ -89,6 +90,10 @@ class SQLBaseError(ValueError):
     def rule_code(self) -> str:
         """Fetch the code of the rule which cause this error."""
         return self._code or "????"
+
+    def rule_name(self) -> str:
+        """Fetch the name of the rule which cause this error."""
+        return self._name or "????"
 
     def desc(self) -> str:
         """Fetch a description of this violation."""
@@ -141,7 +146,7 @@ class SQLBaseError(ValueError):
         Returns:
             None
         """
-        if self.rule_code() in warning_iterable:
+        if self.rule_code() in warning_iterable or self.rule_name() in warning_iterable:
             self.warning = True
 
 
@@ -336,6 +341,10 @@ class SQLLintError(SQLBaseError):
     def rule_code(self) -> str:
         """Fetch the code of the rule which cause this error."""
         return self.rule.code
+
+    def rule_name(self) -> str:
+        """Fetch the name of the rule which cause this error."""
+        return self.rule.name
 
     def source_signature(self) -> Tuple[Any, ...]:
         """Return hashable source signature for deduplication.

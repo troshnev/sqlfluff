@@ -112,7 +112,7 @@ postgres_dialect.insert_lexer_matchers(
         ),
         RegexLexer(
             "json_operator",
-            r"->>|#>>|->|#>|@>|<@|\?\||\?|\?&|#-",
+            r"->>?|#>>?|@[>@?]|<@|\?[|&]?|#-",
             SymbolSegment,
         ),
         # r"|".join(
@@ -145,6 +145,7 @@ postgres_dialect.insert_lexer_matchers(
             r"[bBxX]'[0-9a-fA-F]*'",
             CodeSegment,
         ),
+        StringLexer("full_text_search_operator", "!!", SymbolSegment),
     ],
     before="like_operator",
 )
@@ -170,7 +171,7 @@ postgres_dialect.insert_lexer_matchers(
             # them. In future we may want to enhance this to actually parse them to
             # ensure they are valid meta commands.
             "meta_command",
-            r"\\([^\\\r\n])+((\\\\)|(?=\n)|(?=\r\n))?",
+            r"\\(?!gset|gexec)([^\\\r\n])+((\\\\)|(?=\n)|(?=\r\n))?",
             CommentSegment,
         ),
         RegexLexer(
@@ -182,6 +183,14 @@ postgres_dialect.insert_lexer_matchers(
             "dollar_numeric_literal",
             r"\$\d+",
             LiteralSegment,
+        ),
+        RegexLexer(
+            # For now we'll just treat meta syntax like comments and so just ignore
+            # them. In future we may want to enhance this to actually parse them to
+            # ensure they are valid meta commands.
+            "meta_command_query_buffer",
+            r"\\([^\\\r\n])+((\\g(set|exec))|(?=\n)|(?=\r\n))?",
+            SymbolSegment,
         ),
     ],
     before="word",  # Final thing to search for - as psql specific
@@ -300,7 +309,20 @@ postgres_dialect.sets("datetime_units").update(
 
 # Set the bare functions
 postgres_dialect.sets("bare_functions").update(
-    ["CURRENT_TIMESTAMP", "CURRENT_TIME", "CURRENT_DATE", "LOCALTIME", "LOCALTIMESTAMP"]
+    [
+        "CURRENT_TIMESTAMP",
+        "CURRENT_TIME",
+        "CURRENT_DATE",
+        "LOCALTIME",
+        "LOCALTIMESTAMP",
+        "CURRENT_CATALOG",
+        "CURRENT_ROLE",
+        "CURRENT_SCHEMA",
+        "CURRENT_USER",
+        "SESSION_USER",
+        "SYSTEM_USER",
+        "USER",
+    ]
 )
 
 # Postgres doesn't have a dateadd function
@@ -388,6 +410,12 @@ postgres_dialect.add(
     CreateForeignTableGrammar=Sequence("CREATE", "FOREIGN", "TABLE"),
     IntervalUnitsGrammar=OneOf("YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND"),
     WalrusOperatorSegment=StringParser(":=", SymbolSegment, type="assignment_operator"),
+    MetaCommandQueryBufferSegment=TypedParser(
+        "meta_command_query_buffer", SymbolSegment, type="meta_command"
+    ),
+    FullTextSearchOperatorSegment=TypedParser(
+        "full_text_search_operator", LiteralSegment, type="full_text_search_operator"
+    ),
 )
 
 postgres_dialect.replace(
@@ -423,7 +451,13 @@ postgres_dialect.replace(
     ),
     Expression_C_Grammar=Sequence(
         Ref("WalrusOperatorSegment", optional=True),
-        ansi_dialect.get_grammar("Expression_C_Grammar"),
+        OneOf(
+            ansi_dialect.get_grammar("Expression_C_Grammar"),
+            Sequence(
+                Ref("FullTextSearchOperatorSegment", optional=True),
+                Ref("ShorthandCastSegment"),
+            ),
+        ),
     ),
     ParameterNameSegment=RegexParser(
         r'[A-Z_][A-Z0-9_$]*|"[^"]*"', CodeSegment, type="parameter"
@@ -480,12 +514,14 @@ postgres_dialect.replace(
                 Ref("QuotedLiteralSegment"),
                 Ref("SingleIdentifierGrammar"),
                 Ref("ColumnReferenceSegment"),
+                Ref("ExpressionSegment"),
             ),
             "IN",
             OneOf(
                 Ref("QuotedLiteralSegment"),
                 Ref("SingleIdentifierGrammar"),
                 Ref("ColumnReferenceSegment"),
+                Ref("ExpressionSegment"),
             ),
         ),
         Ref("IgnoreRespectNullsGrammar"),
@@ -597,7 +633,11 @@ postgres_dialect.replace(
         OneOf("IN", "OUT", "INOUT", "VARIADIC", optional=True),
         OneOf(
             Ref("DatatypeSegment"),
-            Sequence(Ref("ParameterNameSegment"), Ref("DatatypeSegment")),
+            Sequence(
+                Ref("ParameterNameSegment"),
+                OneOf("IN", "OUT", "INOUT", "VARIADIC", optional=True),
+                OneOf(Ref("DatatypeSegment"), Ref("ColumnTypeReferenceSegment")),
+            ),
         ),
         Sequence(
             OneOf("DEFAULT", Ref("EqualsSegment"), Ref("WalrusOperatorSegment")),
@@ -621,6 +661,7 @@ postgres_dialect.replace(
         "LIMIT",
         Ref("CommaSegment"),
         Ref("SetOperatorSegment"),
+        Ref("MetaCommandQueryBufferSegment"),
     ),
     LiteralGrammar=ansi_dialect.get_grammar("LiteralGrammar").copy(
         insert=[
@@ -795,11 +836,7 @@ class DateTimeTypeIdentifier(BaseSegment):
     type = "datetime_type_identifier"
     match_grammar = OneOf(
         "DATE",
-        Sequence(
-            OneOf("TIME", "TIMESTAMP"),
-            Bracketed(Ref("NumericLiteralSegment"), optional=True),
-            Sequence(OneOf("WITH", "WITHOUT"), "TIME", "ZONE", optional=True),
-        ),
+        Ref("TimeWithTZGrammar"),
         Sequence(
             OneOf("INTERVAL", "TIMETZ", "TIMESTAMPTZ"),
             Bracketed(Ref("NumericLiteralSegment"), optional=True),
@@ -835,6 +872,7 @@ class DatatypeSegment(ansi.DatatypeSegment):
             Ref("WellKnownTextGeometrySegment"),
             Ref("DateTimeTypeIdentifier"),
             Ref("StructTypeSegment"),
+            Ref("MapTypeSegment"),
             Sequence(
                 OneOf(
                     # numeric types
@@ -1088,6 +1126,49 @@ class CreateAggregateStatementSegment(BaseSegment):
             Anything(),
         ),
         Ref("FunctionParameterListGrammar"),
+    )
+
+
+class AlterAggregateStatementSegment(BaseSegment):
+    """A `ALTER AGGREGATE` statement.
+
+    https://www.postgresql.org/docs/current/sql-alteraggregate.html
+    """
+
+    type = "alter_aggregate_statement"
+    match_grammar: Matchable = Sequence(
+        "ALTER",
+        "AGGREGATE",
+        Ref("ObjectReferenceSegment"),
+        Bracketed(
+            OneOf(
+                Ref("FunctionParameterListGrammar"),
+                Anything(),
+                Ref("StarSegment"),
+            )
+        ),
+        OneOf(
+            Sequence(
+                "RENAME",
+                "TO",
+                Ref("FunctionNameSegment"),
+            ),
+            Sequence(
+                "OWNER",
+                "TO",
+                OneOf(
+                    "CURRENT_ROLE",
+                    "CURRENT_USER",
+                    "SESSION_USER",
+                    Ref("RoleReferenceSegment"),
+                ),
+            ),
+            Sequence(
+                "SET",
+                "SCHEMA",
+                Ref("SchemaReferenceSegment"),
+            ),
+        ),
     )
 
 
@@ -1629,6 +1710,26 @@ class ForClauseSegment(BaseSegment):
     )
 
 
+class FetchClauseSegment(ansi.FetchClauseSegment):
+    """A `FETCH` clause like in `SELECT."""
+
+    type = "fetch_clause"
+    match_grammar: Matchable = Sequence(
+        "FETCH",
+        OneOf(
+            "FIRST",
+            "NEXT",
+        ),
+        OneOf(
+            Ref("NumericLiteralSegment"),
+            Ref("ExpressionSegment", exclude=Ref.keyword("ROW")),
+            optional=True,
+        ),
+        OneOf("ROW", "ROWS"),
+        OneOf("ONLY", Sequence("WITH", "TIES")),
+    )
+
+
 class UnorderedSelectStatementSegment(ansi.UnorderedSelectStatementSegment):
     """Overrides ANSI Statement, to allow for SELECT INTO statements."""
 
@@ -1642,24 +1743,26 @@ class UnorderedSelectStatementSegment(ansi.UnorderedSelectStatementSegment):
             Sequence("ON", "CONFLICT"),
             Ref.keyword("RETURNING"),
             Ref("WithCheckOptionSegment"),
+            Ref("MetaCommandQueryBufferSegment"),
         ],
     )
 
 
 class SelectStatementSegment(ansi.SelectStatementSegment):
-    """Overrides ANSI as the parse grammar copy needs to be reapplied."""
+    """Overrides ANSI as the parse grammar copy needs to be reapplied.
+
+    As per https://www.postgresql.org/docs/current/sql-select.html
+    """
 
     # Inherit most of the parse grammar from the unordered version.
     match_grammar: Matchable = UnorderedSelectStatementSegment.match_grammar.copy(
         insert=[
+            Ref("NamedWindowSegment", optional=True),
             Ref("OrderByClauseSegment", optional=True),
             Ref("LimitClauseSegment", optional=True),
-            Ref("NamedWindowSegment", optional=True),
-        ]
-    ).copy(
-        insert=[Ref("ForClauseSegment", optional=True)],
-        before=Ref("LimitClauseSegment", optional=True),
-        # Overwrite the terminators, because we want to remove some.
+            Ref("FetchClauseSegment", optional=True),
+            Ref("ForClauseSegment", optional=True),
+        ],
         replace_terminators=True,
         terminators=[
             Ref("SetOperatorSegment"),
@@ -1668,6 +1771,7 @@ class SelectStatementSegment(ansi.SelectStatementSegment):
             Sequence("ON", "CONFLICT"),
             Ref.keyword("RETURNING"),
             Ref("WithCheckOptionSegment"),
+            Ref("MetaCommandQueryBufferSegment"),
         ],
     )
 
@@ -1696,6 +1800,7 @@ class SelectClauseSegment(ansi.SelectClauseSegment):
             Ref("SetOperatorSegment"),
             Sequence("WITH", Ref.keyword("NO", optional=True), "DATA"),
             Ref("WithCheckOptionSegment"),
+            Ref("MetaCommandQueryBufferSegment"),
         ],
         parse_mode=ParseMode.GREEDY_ONCE_STARTED,
     )
@@ -2616,6 +2721,28 @@ class AlterExtensionStatementSegment(BaseSegment):
     )
 
 
+class CreateForeignDataWrapperStatementSegment(BaseSegment):
+    """A CREATE FOREIGN DATA WRAPPER Statement.
+
+    Docs: https://fdw.dev/catalog/
+    """
+
+    type = "create_foreign_data_wrapper"
+    match_grammar: Matchable = Sequence(
+        "CREATE",
+        Ref("ForeignDataWrapperGrammar"),
+        Ref("SingleIdentifierGrammar"),
+        Indent,
+        "HANDLER",
+        Ref("SingleIdentifierGrammar"),
+        Dedent,
+        Indent,
+        "VALIDATOR",
+        Ref("SingleIdentifierGrammar"),
+        Dedent,
+    )
+
+
 class SubscriptionReferenceSegment(ansi.ObjectReferenceSegment):
     """A subscription reference."""
 
@@ -3226,7 +3353,12 @@ class AlterDatabaseStatementSegment(BaseSegment):
                 OneOf(
                     Sequence(
                         OneOf("TO", Ref("EqualsSegment")),
-                        OneOf("DEFAULT", Ref("LiteralGrammar")),
+                        OneOf(
+                            "DEFAULT",
+                            Ref("LiteralGrammar"),
+                            Ref("NakedIdentifierSegment"),
+                            Ref("QuotedIdentifierSegment"),
+                        ),
                     ),
                     Sequence("FROM", "CURRENT"),
                 ),
@@ -4664,11 +4796,17 @@ class StatementSegment(ansi.StatementSegment):
             Ref("CreateForeignTableStatementSegment"),
             Ref("DropAggregateStatementSegment"),
             Ref("CreateAggregateStatementSegment"),
+            Ref("AlterAggregateStatementSegment"),
             Ref("CreateStatisticsStatementSegment"),
             Ref("AlterStatisticsStatementSegment"),
             Ref("DropStatisticsStatementSegment"),
             Ref("ShowStatementSegment"),
             Ref("SetConstraintsStatementSegment"),
+            Ref("CreateForeignDataWrapperStatementSegment"),
+            Ref("MetaCommandQueryBufferStatement"),
+            Ref("DropForeignTableStatement"),
+            Ref("CreateOperatorStatementSegment"),
+            Ref("AlterForeignTableStatementSegment"),
         ],
     )
 
@@ -4940,6 +5078,7 @@ class InsertStatementSegment(ansi.InsertStatementSegment):
         ),
         Sequence(
             "RETURNING",
+            Indent,
             OneOf(
                 Ref("StarSegment"),
                 Delimited(
@@ -4949,6 +5088,7 @@ class InsertStatementSegment(ansi.InsertStatementSegment):
                     ),
                 ),
             ),
+            Dedent,
             optional=True,
         ),
     )
@@ -5633,6 +5773,7 @@ class DeleteStatementSegment(ansi.DeleteStatementSegment):
         ),
         Sequence(
             "RETURNING",
+            Indent,
             OneOf(
                 Ref("StarSegment"),
                 Delimited(
@@ -5642,6 +5783,7 @@ class DeleteStatementSegment(ansi.DeleteStatementSegment):
                     ),
                 ),
             ),
+            Dedent,
             optional=True,
         ),
     )
@@ -5722,10 +5864,12 @@ class UpdateStatementSegment(BaseSegment):
         # TODO add [ WITH [ RECURSIVE ] with_query [, ...] ]
         "UPDATE",
         Ref.keyword("ONLY", optional=True),
+        Indent,
         Ref("TableReferenceSegment"),
         # SET is not a reserved word in all dialects (e.g. RedShift)
         # So specifically exclude as an allowed implicit alias to avoid parsing errors
         Ref("AliasExpressionSegment", exclude=Ref.keyword("SET"), optional=True),
+        Dedent,
         Ref("SetClauseListSegment"),
         Ref("FromClauseSegment", optional=True),
         OneOf(
@@ -5735,6 +5879,7 @@ class UpdateStatementSegment(BaseSegment):
         ),
         Sequence(
             "RETURNING",
+            Indent,
             OneOf(
                 Ref("StarSegment"),
                 Delimited(
@@ -5744,6 +5889,7 @@ class UpdateStatementSegment(BaseSegment):
                     ),
                 ),
             ),
+            Dedent,
             optional=True,
         ),
     )
@@ -6047,7 +6193,7 @@ class NamedArgumentSegment(BaseSegment):
     type = "named_argument"
     match_grammar = Sequence(
         Ref("NakedIdentifierSegment"),
-        Ref("RightArrowSegment"),
+        OneOf(Ref("RightArrowSegment"), Ref("WalrusOperatorSegment")),
         Ref("ExpressionSegment"),
     )
 
@@ -6291,4 +6437,173 @@ class ShowStatementSegment(BaseSegment):
             "SERVER_VERSION",
             Ref("ParameterNameSegment"),
         ),
+    )
+
+
+class MetaCommandQueryBufferStatement(BaseSegment):
+    """A statement that uses meta-commands to change query buffer (e.g. gset and gexec).
+
+    https://www.postgresql.org/docs/current/app-psql.html#APP-PSQL-META-COMMAND-GEXEC
+    """
+
+    type = "meta_command_statement"
+
+    match_grammar = Sequence(
+        AnyNumberOf(
+            Sequence(
+                Ref("SelectStatementSegment"),
+                Ref("MetaCommandQueryBufferSegment", optional=True),
+            )
+        )
+    )
+
+
+class DropForeignTableStatement(BaseSegment):
+    """A `DROP FOREIGN TABLE` Statement.
+
+    https://www.postgresql.org/docs/current/sql-dropforeigntable.html
+    """
+
+    type = "drop_foreign_table_statement"
+
+    match_grammar = Sequence(
+        "DROP",
+        "FOREIGN",
+        "TABLE",
+        Ref("IfExistsGrammar", optional=True),
+        Delimited(
+            Ref("TableReferenceSegment"),
+        ),
+        Ref("CascadeRestrictGrammar", optional=True),
+    )
+
+
+class ColumnTypeReferenceSegment(BaseSegment):
+    """A column type reference segment (e.g. `table_name.column_name%type`).
+
+    https://www.postgresql.org/docs/current/sql-createfunction.html
+    """
+
+    type = "column_type_reference"
+
+    match_grammar = Sequence(
+        Ref("ColumnReferenceSegment"), Ref("ModuloSegment"), "TYPE"
+    )
+
+
+class CreateOperatorStatementSegment(BaseSegment):
+    """A `CREATE OPERATOR` statement.
+
+    As specified in https://www.postgresql.org/docs/17/sql-createoperator.html
+    """
+
+    type = "create_operator_statement"
+
+    match_grammar = Sequence(
+        "CREATE",
+        "OPERATOR",
+        AnyNumberOf(
+            RegexParser(r"^[+\-*/<>=~!@#%^&|`?]+$", SymbolSegment, "commutator"),
+        ),
+        Bracketed(
+            Delimited(
+                Sequence(
+                    OneOf("LEFTARG", "RIGHTARG"),
+                    Ref("EqualsSegment"),
+                    Ref("ObjectReferenceSegment"),
+                    optional=True,
+                ),
+                Sequence(
+                    "COMMUTATOR",
+                    Ref("EqualsSegment"),
+                    AnyNumberOf(
+                        RegexParser(
+                            r"^[+\-*/<>=~!@#%^&|`?]+$", SymbolSegment, "commutator"
+                        ),
+                    ),
+                    optional=True,
+                ),
+                Sequence(
+                    "NEGATOR",
+                    Ref("EqualsSegment"),
+                    AnyNumberOf(
+                        RegexParser(
+                            r"^[+\-*/<>=~!@#%^&|`?]+$", SymbolSegment, "negator"
+                        ),
+                    ),
+                    optional=True,
+                ),
+                Sequence(
+                    OneOf("RESTRICT", "JOIN", OneOf("PROCEDURE", "FUNCTION")),
+                    Ref("EqualsSegment"),
+                    Ref("FunctionNameSegment"),
+                    optional=True,
+                ),
+                Ref.keyword("HASHES", optional=True),
+                Ref.keyword("MERGES", optional=True),
+            )
+        ),
+    )
+
+
+class AlterForeignTableStatementSegment(BaseSegment):
+    """An `ALTER TABLE` statement.
+
+    https://www.postgresql.org/docs/17/sql-alterforeigntable.html
+    """
+
+    type = "alter_foreign_table_statement"
+
+    match_grammar = Sequence(
+        "ALTER",
+        "FOREIGN",
+        "TABLE",
+        Sequence(
+            Ref("IfExistsGrammar", optional=True),
+            Ref.keyword("ONLY", optional=True),
+            Ref("TableReferenceSegment"),
+            Ref("StarSegment", optional=True),
+            OneOf(
+                Delimited(Ref("AlterForeignTableActionSegment")),
+                Sequence(
+                    "RENAME",
+                    Ref.keyword("COLUMN", optional=True),
+                    Ref("ColumnReferenceSegment"),
+                    "TO",
+                    Ref("ColumnReferenceSegment"),
+                ),
+            ),
+        ),
+    )
+
+
+class AlterForeignTableActionSegment(AlterTableActionSegment):
+    """Alter Foreign Table Action Segment.
+
+    https://www.postgresql.org/docs/17/sql-alterforeigntable.html
+    """
+
+    type = "alter_foreign_table_action_segment"
+
+    match_grammar = AlterTableActionSegment.match_grammar.copy(
+        insert=[
+            Sequence(
+                Sequence(
+                    "ALTER",
+                    Ref("COLUMN", optional=True),
+                    Ref("ColumnReferenceSegment"),
+                    optional=True,
+                ),
+                "OPTIONS",
+                Bracketed(
+                    Delimited(
+                        Sequence(
+                            OneOf("ADD", "SET", "DROP", optional=True),
+                            Ref("SingleIdentifierGrammar"),
+                            Ref("QuotedLiteralSegment", optional=True),
+                        )
+                    )
+                ),
+            )
+        ]
     )

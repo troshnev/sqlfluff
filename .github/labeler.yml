@@ -28,6 +28,12 @@ greenplum:
 hive:
   - "/(hive)/i"
 
+impala:
+  - "/(impala)/i"
+
+mariadb:
+  - "/(mariadb)/i"
+
 materialize:
   - "/(materialize)/i"
 
@@ -54,6 +60,9 @@ sparksql:
 
 sqlite:
   - "/(sqlite)/i"
+
+starrocks:
+  - "/(starrocks)/i"
 
 t-sql:
   - "/(t-sql|tsql)/i"

@@ -1,8 +1,8 @@
 """Methods for validating config dicts."""
 
 from sqlfluff.core.config.removed import validate_config_dict_for_removed
-from sqlfluff.core.config.types import ConfigMappingType
 from sqlfluff.core.errors import SQLFluffUserError
+from sqlfluff.core.types import ConfigMappingType
 
 ALLOWABLE_LAYOUT_CONFIG_KEYS = (
     "spacing_before",
@@ -11,6 +11,7 @@ ALLOWABLE_LAYOUT_CONFIG_KEYS = (
     "line_position",
     "align_within",
     "align_scope",
+    "keyword_line_position",
 )
 
 

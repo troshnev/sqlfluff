@@ -17,6 +17,7 @@ from sqlfluff.core.parser import (
     Dedent,
     Delimited,
     IdentifierSegment,
+    ImplicitIndent,
     Indent,
     KeywordSegment,
     LiteralSegment,
@@ -244,7 +245,7 @@ snowflake_dialect.add(
         type="semi_structured_element",
     ),
     # Normally, double quotes can't be used for literals. But in a few
-    # cases they can (e.g. Tags).
+    # cases they can (e.g. Tags, Comments).
     DoubleQuotedLiteralSegment=TypedParser(
         "double_quote", LiteralSegment, type="quoted_literal"
     ),
@@ -255,6 +256,11 @@ snowflake_dialect.add(
     ),
     LocalVariableNameSegment=RegexParser(
         r"[a-zA-Z0-9_]*",
+        CodeSegment,
+        type="variable",
+    ),
+    SnowflakeVariableNameSegment=RegexParser(
+        r":[a-zA-Z0-9_]*",
         CodeSegment,
         type="variable",
     ),
@@ -354,7 +360,7 @@ snowflake_dialect.add(
         type="copy_on_error_option",
     ),
     DynamicTableLagIntervalSegment=RegexParser(
-        r"'((DOWNSTREAM)|([1-9]\d*\s+(?:SECOND|MINUTE|HOUR|DAY)S?))'",
+        r"DYNAMIC|'.*'",
         LiteralSegment,
         type="dynamic_table_lag_interval_segment",
     ),
@@ -601,6 +607,23 @@ snowflake_dialect.add(
         OneOf("VALIDATE", "NOVALIDATE"),
         OneOf("RELY", "NORELY"),
     ),
+    ForeignKeyConstraintGrammar=AnySetOf(
+        Sequence("MATCH", OneOf("FULL", "SIMPLE", "PARTIAL")),
+        Sequence(
+            AnyNumberOf(
+                "ON",
+                OneOf("UPDATE", "DELETE"),
+                OneOf(
+                    "CASCADE",
+                    Sequence(Ref.keyword("SET"), Ref.keyword("NULL")),
+                    Sequence(Ref.keyword("SET"), Ref.keyword("DEFAULT")),
+                    "RESTRICT",
+                    Sequence("NO", "ACTION"),
+                ),
+            )
+        ),
+    ),
+    AlterOrReplaceGrammar=OneOf(Sequence("OR", "ALTER"), Ref("OrReplaceGrammar")),
 )
 
 snowflake_dialect.replace(
@@ -680,11 +703,19 @@ snowflake_dialect.replace(
     ),
     BaseExpressionElementGrammar=ansi_dialect.get_grammar(
         "BaseExpressionElementGrammar"
-    ).copy(
+    )
+    .copy(
         insert=[
             # Allow use of CONNECT_BY_ROOT pseudo-columns.
             # https://docs.snowflake.com/en/sql-reference/constructs/connect-by.html#:~:text=Snowflake%20supports%20the%20CONNECT_BY_ROOT,the%20Examples%20section%20below.
             Sequence("CONNECT_BY_ROOT", Ref("ColumnReferenceSegment")),
+            Sequence("PRIOR", Ref("ColumnReferenceSegment")),
+        ],
+        before=Ref("LiteralGrammar"),
+    )
+    .copy(
+        insert=[
+            Ref("SnowflakeVariableNameSegment"),
         ],
         before=Ref("LiteralGrammar"),
     ),
@@ -1165,27 +1196,13 @@ class ConnectByClauseSegment(BaseSegment):
             "CONNECT",
             "BY",
             Delimited(
-                Sequence(
-                    Ref.keyword("PRIOR", optional=True),
-                    Ref("ColumnReferenceSegment"),
-                    Ref("EqualsSegment"),
-                    Ref.keyword("PRIOR", optional=True),
-                    Ref("ColumnReferenceSegment"),
-                ),
+                OptionallyBracketed(Ref("ExpressionSegment")),
             ),
         ),
         Sequence(
             "CONNECT",
             "BY",
-            Delimited(
-                Sequence(
-                    Ref.keyword("PRIOR", optional=True),
-                    Ref("ColumnReferenceSegment"),
-                    Ref("EqualsSegment"),
-                    Ref("ColumnReferenceSegment"),
-                ),
-                delimiter="AND",
-            ),
+            OptionallyBracketed(Ref("ExpressionSegment")),
             Sequence(
                 "START",
                 "WITH",
@@ -1416,6 +1433,9 @@ class StatementSegment(ansi.StatementSegment):
             Ref("CreatePasswordPolicyStatementSegment"),
             Ref("AlterPasswordPolicyStatementSegment"),
             Ref("DropPasswordPolicyStatementSegment"),
+            Ref("CreateRowAccessPolicyStatementSegment"),
+            Ref("AlterRowAccessPolicyStatmentSegment"),
+            Ref("AlterTagStatementSegment"),
         ],
         remove=[
             Ref("CreateIndexStatementSegment"),
@@ -1858,7 +1878,7 @@ class QualifyClauseSegment(BaseSegment):
     type = "qualify_clause"
     match_grammar = Sequence(
         "QUALIFY",
-        Indent,
+        ImplicitIndent,
         OneOf(
             Bracketed(
                 Ref("ExpressionSegment"),
@@ -1893,7 +1913,7 @@ class SelectClauseElementSegment(ansi.SelectClauseElementSegment):
         insert=[
             Sequence(
                 Ref("SystemFunctionName"),
-                Bracketed(Ref("QuotedLiteralSegment")),
+                Bracketed(Delimited(Ref("LiteralGrammar"))),
             )
         ],
         before=Ref("WildcardExpressionSegment"),
@@ -2101,6 +2121,7 @@ class AlterTableTableColumnActionSegment(BaseSegment):
                     Ref("IfNotExistsGrammar", optional=True),
                     Ref("ColumnReferenceSegment"),
                     Ref("DatatypeSegment"),
+                    Sequence("NOT", "NULL", optional=True),
                     OneOf(
                         # Default & AS (virtual columns)
                         Sequence(
@@ -2331,7 +2352,7 @@ class AlterTableConstraintActionSegment(BaseSegment):
         # Add Column
         Sequence(
             "ADD",
-            Ref("ConstraintPropertiesSegment"),
+            Ref("OutOfLineConstraintPropertiesSegment"),
         ),
         Sequence(
             "DROP",
@@ -2436,7 +2457,7 @@ class AlterShareStatementSegment(BaseSegment):
                 ),
                 "ACCOUNTS",
                 Ref("EqualsSegment"),
-                Delimited(Ref("NakedIdentifierSegment")),
+                Delimited(Ref("ObjectReferenceSegment")),
                 Sequence(
                     "SHARE_RESTRICTIONS",
                     Ref("EqualsSegment"),
@@ -2448,7 +2469,7 @@ class AlterShareStatementSegment(BaseSegment):
                 "SET",
                 "ACCOUNTS",
                 Ref("EqualsSegment"),
-                Delimited(Ref("NakedIdentifierSegment")),
+                Delimited(Ref("ObjectReferenceSegment")),
                 Ref("CommentEqualsClauseSegment", optional=True),
             ),
             Sequence(
@@ -2626,7 +2647,9 @@ class CommentEqualsClauseSegment(BaseSegment):
 
     type = "comment_equals_clause"
     match_grammar = Sequence(
-        "COMMENT", Ref("EqualsSegment"), Ref("QuotedLiteralSegment")
+        "COMMENT",
+        Ref("EqualsSegment"),
+        OneOf(Ref("QuotedLiteralSegment"), Ref("DoubleQuotedLiteralSegment")),
     )
 
 
@@ -2813,6 +2836,7 @@ class AccessStatementSegment(BaseSegment):
                 "DATABASE",
                 "INTEGRATION",
                 "SHARE",
+                "TAG",
                 Sequence("DATA", "EXCHANGE", "LISTING"),
                 Sequence("NETWORK", "POLICY"),
             ),
@@ -2822,7 +2846,7 @@ class AccessStatementSegment(BaseSegment):
         Sequence("APPLY", "SESSION", "POLICY"),
         Sequence("APPLY", "TAG"),
         Sequence("ATTACH", "POLICY"),
-        Sequence("EXECUTE", "TASK"),
+        Sequence("EXECUTE", OneOf("ALERT", "TASK")),
         Sequence("IMPORT", "SHARE"),
         Sequence(
             "MANAGE",
@@ -2916,22 +2940,13 @@ class AccessStatementSegment(BaseSegment):
                 "INTEGRATION",
                 "SCHEMA",
                 "ROLE",
+                "USER",
                 Sequence("ALL", "SCHEMAS", "IN", "DATABASE"),
                 Sequence("FUTURE", "SCHEMAS", "IN", "DATABASE"),
                 _schema_object_types,
                 Sequence(
-                    "ALL",
-                    OneOf(
-                        _schema_object_types_plural,
-                        Sequence("MATERIALIZED", "VIEWS"),
-                        Sequence("EXTERNAL", "TABLES"),
-                        Sequence("FILE", "FORMATS"),
-                    ),
-                    "IN",
-                    OneOf("SCHEMA", "DATABASE"),
-                ),
-                Sequence(
-                    "FUTURE",
+                    OneOf("ALL", "FUTURE"),
+                    OneOf("DYNAMIC", optional=True),
                     OneOf(
                         _schema_object_types_plural,
                         Sequence("MATERIALIZED", "VIEWS"),
@@ -2979,13 +2994,21 @@ class AccessStatementSegment(BaseSegment):
                     "SCHEMA",
                     Ref("SchemaReferenceSegment"),
                 ),
+                Sequence("APPLICATION", "ROLE", Ref("ObjectReferenceSegment")),
                 # In the case where a role is granted non-explicitly,
                 # e.g. GRANT ROLE_NAME TO OTHER_ROLE_NAME
                 # See https://docs.snowflake.com/en/sql-reference/sql/grant-role.html
                 Ref("ObjectReferenceSegment"),
             ),
             "TO",
-            OneOf("USER", "ROLE", "SHARE", Sequence("DATABASE", "ROLE"), optional=True),
+            OneOf(
+                "APPLICATION",
+                "USER",
+                "ROLE",
+                "SHARE",
+                Sequence("DATABASE", "ROLE"),
+                optional=True,
+            ),
             Delimited(
                 OneOf(
                     Ref("RoleReferenceSegment"),
@@ -3474,6 +3497,7 @@ class CreateFunctionStatementSegment(BaseSegment):
     match_grammar = Sequence(
         "CREATE",
         Ref("OrReplaceGrammar", optional=True),
+        OneOf("TEMP", "TEMPORARY", optional=True),
         Sequence("SECURE", optional=True),
         Sequence("AGGREGATE", optional=True),
         "FUNCTION",
@@ -3895,6 +3919,16 @@ class WarehouseObjectPropertiesSegment(BaseSegment):
             Ref("EqualsSegment"),
             Ref("NakedIdentifierSegment"),
         ),
+        Sequence(
+            "ENABLE_QUERY_ACCELERATION",
+            Ref("EqualsSegment"),
+            Ref("BooleanLiteralGrammar"),
+        ),
+        Sequence(
+            "QUERY_ACCELERATION_MAX_SCALE_FACTOR",
+            Ref("EqualsSegment"),
+            Ref("NumericLiteralSegment"),
+        ),
     )
 
 
@@ -3926,10 +3960,56 @@ class WarehouseObjectParamsSegment(BaseSegment):
     )
 
 
-class ConstraintPropertiesSegment(BaseSegment):
-    """CONSTRAINT clause for CREATE TABLE or ALTER TABLE command.
+class InlineConstraintPropertiesSegment(BaseSegment):
+    """In Line CONSTRAINT clause for CREATE TABLE or ALTER TABLE command.
 
-    https://docs.snowflake.com/en/sql-reference/constraints-properties.html
+    https://docs.snowflake.com/sql-reference/sql/create-table-constraint#syntax-for-inline-constraints
+    """
+
+    type = "constraint_properties_segment"
+    match_grammar = Sequence(
+        Sequence(
+            "CONSTRAINT",
+            Ref("SingleIdentifierGrammar"),
+            optional=True,
+        ),
+        OneOf(
+            Sequence(
+                OneOf(
+                    Ref("PrimaryKeyGrammar"),
+                    Ref("UniqueKeyGrammar"),
+                ),
+                Bracketed(
+                    Delimited(
+                        Ref("ColumnReferenceSegment"),
+                    ),
+                    # For use in CREATE TABLE as a part of
+                    # ColumnDefinitionSegment.ColumnConstraintSegment
+                    optional=True,
+                ),
+            ),
+            Sequence(
+                Sequence(
+                    Ref("ForeignKeyGrammar"),
+                ),
+                "REFERENCES",
+                Ref("TableReferenceSegment"),
+                Bracketed(
+                    Delimited(
+                        Ref("ColumnReferenceSegment"),
+                    ),
+                ),
+                Ref("ForeignKeyConstraintGrammar", optional=True),
+            ),
+        ),
+        Ref("InlineConstraintGrammar", optional=True),
+    )
+
+
+class OutOfLineConstraintPropertiesSegment(BaseSegment):
+    """Our of Line CONSTRAINT clause for CREATE TABLE or ALTER TABLE command.
+
+    https://docs.snowflake.com/sql-reference/sql/create-table-constraint#syntax-for-out-of-line-constraints
     """
 
     type = "constraint_properties_segment"
@@ -3960,7 +4040,7 @@ class ConstraintPropertiesSegment(BaseSegment):
                     Bracketed(
                         Delimited(
                             Ref("ColumnReferenceSegment"),
-                        )
+                        ),
                     ),
                 ),
                 "REFERENCES",
@@ -3971,6 +4051,7 @@ class ConstraintPropertiesSegment(BaseSegment):
                     ),
                     optional=True,
                 ),
+                Ref("ForeignKeyConstraintGrammar", optional=True),
             ),
         ),
         Ref("InlineConstraintGrammar", optional=True),
@@ -4023,7 +4104,7 @@ class ColumnConstraintSegment(ansi.ColumnConstraintSegment):
             ),
         ),
         Ref("TagBracketedEqualsSegment", optional=True),
-        Ref("ConstraintPropertiesSegment"),
+        Ref("InlineConstraintPropertiesSegment"),
         Sequence("DEFAULT", Ref("QuotedLiteralSegment")),
         Sequence("CHECK", Bracketed(Ref("ExpressionSegment"))),
         Sequence(  # DEFAULT <value>
@@ -4053,60 +4134,55 @@ class CopyOptionsSegment(BaseSegment):
 
     type = "copy_options"
 
-    match_grammar = OneOf(
-        AnySetOf(
-            Sequence("ON_ERROR", Ref("EqualsSegment"), Ref("CopyOptionOnErrorSegment")),
-            Sequence("SIZE_LIMIT", Ref("EqualsSegment"), Ref("NumericLiteralSegment")),
-            Sequence("PURGE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
-            Sequence(
-                "RETURN_FAILED_ONLY", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
+    _copy_options_matchables = [
+        Sequence("ON_ERROR", Ref("EqualsSegment"), Ref("CopyOptionOnErrorSegment")),
+        Sequence("SIZE_LIMIT", Ref("EqualsSegment"), Ref("NumericLiteralSegment")),
+        Sequence("PURGE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence(
+            "RETURN_FAILED_ONLY", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
+        ),
+        Sequence(
+            "MATCH_BY_COLUMN_NAME",
+            Ref("EqualsSegment"),
+            OneOf(
+                "CASE_SENSITIVE",
+                "CASE_INSENSITIVE",
+                "NONE",
+                Ref("QuotedLiteralSegment"),
             ),
-            Sequence(
-                "MATCH_BY_COLUMN_NAME",
-                Ref("EqualsSegment"),
-                OneOf("CASE_SENSITIVE", "CASE_INSENSITIVE", "NONE"),
-            ),
-            Sequence(
-                "INCLUDE_METADATA",
-                Ref("EqualsSegment"),
-                Bracketed(
-                    Delimited(
-                        Sequence(
-                            Ref("SingleIdentifierGrammar"),
-                            Ref("EqualsSegment"),
-                            OneOf(
-                                "METADATA$FILENAME",
-                                "METADATA$FILE_ROW_NUMBER",
-                                "METADATA$FILE_CONTENT_KEY",
-                                "METADATA$FILE_LAST_MODIFIED",
-                                "METADATA$START_SCAN_TIME",
-                            ),
+        ),
+        Sequence(
+            "INCLUDE_METADATA",
+            Ref("EqualsSegment"),
+            Bracketed(
+                Delimited(
+                    Sequence(
+                        Ref("SingleIdentifierGrammar"),
+                        Ref("EqualsSegment"),
+                        OneOf(
+                            "METADATA$FILENAME",
+                            "METADATA$FILE_ROW_NUMBER",
+                            "METADATA$FILE_CONTENT_KEY",
+                            "METADATA$FILE_LAST_MODIFIED",
+                            "METADATA$START_SCAN_TIME",
                         ),
-                    )
-                ),
-            ),
-            Sequence(
-                "ENFORCE_LENGTH", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
-            ),
-            Sequence(
-                "TRUNCATECOLUMNS", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
-            ),
-            Sequence("FORCE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
-        ),
-        AnySetOf(
-            Sequence("OVERWRITE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
-            Sequence("SINGLE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
-            Sequence(
-                "MAX_FILE_SIZE", Ref("EqualsSegment"), Ref("NumericLiteralSegment")
-            ),
-            Sequence(
-                "INCLUDE_QUERY_ID", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
-            ),
-            Sequence(
-                "DETAILED_OUTPUT", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
+                    ),
+                )
             ),
         ),
-    )
+        Sequence("ENFORCE_LENGTH", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence("TRUNCATECOLUMNS", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence("FORCE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence("OVERWRITE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence("SINGLE", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+        Sequence("MAX_FILE_SIZE", Ref("EqualsSegment"), Ref("NumericLiteralSegment")),
+        Sequence(
+            "INCLUDE_QUERY_ID", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")
+        ),
+        Sequence("DETAILED_OUTPUT", Ref("EqualsSegment"), Ref("BooleanLiteralGrammar")),
+    ]
+
+    match_grammar = AnySetOf(*_copy_options_matchables)
 
 
 class CreateSchemaStatementSegment(ansi.CreateSchemaStatementSegment):
@@ -4118,7 +4194,7 @@ class CreateSchemaStatementSegment(ansi.CreateSchemaStatementSegment):
     type = "create_schema_statement"
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         Ref("TemporaryTransientGrammar", optional=True),
         "SCHEMA",
         Ref("IfNotExistsGrammar", optional=True),
@@ -4384,38 +4460,14 @@ class CreateTableStatementSegment(ansi.CreateTableStatementSegment):
     https://docs.snowflake.com/en/sql-reference/sql/create-dynamic-table
     """
 
-    match_grammar = Sequence(
+    match_grammar: Matchable = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         Ref("TemporaryTransientGrammar", optional=True),
         Ref.keyword("DYNAMIC", optional=True),
         "TABLE",
         Ref("IfNotExistsGrammar", optional=True),
         Ref("TableReferenceSegment"),
-        Sequence(
-            "TARGET_LAG",
-            Ref("EqualsSegment"),
-            Ref("DynamicTableTargetLagSegment"),
-            optional=True,
-        ),
-        Sequence(
-            "REFRESH_MODE",
-            Ref("EqualsSegment"),
-            Ref("RefreshModeType"),
-            optional=True,
-        ),
-        Sequence(
-            "INITIALIZE",
-            Ref("EqualsSegment"),
-            Ref("InitializeType"),
-            optional=True,
-        ),
-        Sequence(
-            "WAREHOUSE",
-            Ref("EqualsSegment"),
-            Ref("ObjectReferenceSegment"),
-            optional=True,
-        ),
         # Columns and comment syntax:
         AnySetOf(
             Sequence(
@@ -4423,7 +4475,7 @@ class CreateTableStatementSegment(ansi.CreateTableStatementSegment):
                     Delimited(
                         Sequence(
                             OneOf(
-                                Ref("ConstraintPropertiesSegment"),
+                                Ref("OutOfLineConstraintPropertiesSegment"),
                                 Ref("ColumnDefinitionSegment"),
                                 Ref("SingleIdentifierGrammar"),
                                 Sequence(
@@ -4509,6 +4561,35 @@ class CreateTableStatementSegment(ansi.CreateTableStatementSegment):
             OneOf(
                 # Create AS syntax:
                 Sequence(
+                    AnySetOf(
+                        Sequence(
+                            "TARGET_LAG",
+                            Ref("EqualsSegment"),
+                            Ref("DynamicTableTargetLagSegment"),
+                            optional=True,
+                        ),
+                        Sequence(
+                            "REFRESH_MODE",
+                            Ref("EqualsSegment"),
+                            Ref("RefreshModeType"),
+                            optional=True,
+                        ),
+                        Sequence(
+                            "INITIALIZE",
+                            Ref("EqualsSegment"),
+                            Ref("InitializeType"),
+                            optional=True,
+                        ),
+                        Sequence(
+                            "WAREHOUSE",
+                            Ref("EqualsSegment"),
+                            OneOf(
+                                Ref("ObjectReferenceSegment"),
+                                Ref("QuotedLiteralSegment"),
+                            ),
+                            optional=True,
+                        ),
+                    ),
                     "AS",
                     OptionallyBracketed(Ref("SelectableGrammar")),
                 ),
@@ -4533,7 +4614,7 @@ class CreateTaskSegment(BaseSegment):
 
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         "TASK",
         Ref("IfNotExistsGrammar", optional=True),
         Ref("ObjectReferenceSegment"),
@@ -4585,7 +4666,7 @@ class CreateTaskSegment(BaseSegment):
         ),
         Sequence(
             "AFTER",
-            Ref("ObjectReferenceSegment"),
+            Delimited(Ref("ObjectReferenceSegment")),
             optional=True,
         ),
         Dedent,
@@ -4637,25 +4718,28 @@ class CreateStatementSegment(BaseSegment):
 
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
         OneOf(
-            Sequence("NETWORK", "POLICY"),
-            Sequence("RESOURCE", "MONITOR"),
-            "SHARE",
-            "ROLE",
-            "USER",
-            "TAG",
-            "WAREHOUSE",
-            Sequence("NOTIFICATION", "INTEGRATION"),
-            Sequence("SECURITY", "INTEGRATION"),
-            Sequence("STORAGE", "INTEGRATION"),
-            Sequence("MATERIALIZED", "VIEW"),
-            Sequence("MASKING", "POLICY"),
-            "PIPE",
-            Sequence("EXTERNAL", "FUNCTION"),
-            # Objects that also support clone
-            "DATABASE",
-            "SEQUENCE",
+            Sequence(
+                Ref("OrReplaceGrammar", optional=True),
+                OneOf(
+                    Sequence("NETWORK", "POLICY"),
+                    Sequence("RESOURCE", "MONITOR"),
+                    "SHARE",
+                    "TAG",
+                    Sequence("NOTIFICATION", "INTEGRATION"),
+                    Sequence("SECURITY", "INTEGRATION"),
+                    Sequence("STORAGE", "INTEGRATION"),
+                    Sequence("MATERIALIZED", "VIEW"),
+                    Sequence("MASKING", "POLICY"),
+                    "PIPE",
+                    Sequence("EXTERNAL", "FUNCTION"),
+                    "SEQUENCE",
+                ),
+            ),
+            Sequence(
+                Ref("AlterOrReplaceGrammar", optional=True),
+                OneOf("WAREHOUSE", "DATABASE"),
+            ),
         ),
         Ref("IfNotExistsGrammar", optional=True),
         Ref("ObjectReferenceSegment"),
@@ -5014,6 +5098,14 @@ class CreateUserSegment(BaseSegment):
                 Ref("EqualsSegment"),
                 Ref("ObjectReferenceSegment"),
             ),
+            Sequence(
+                "TYPE",
+                Ref("EqualsSegment"),
+                OneOf(
+                    Ref("ObjectReferenceSegment"),
+                    Ref("QuotedLiteralSegment"),
+                ),
+            ),
             Ref("CommentEqualsClauseSegment"),
         ),
         Dedent,
@@ -5028,7 +5120,7 @@ class CreateViewStatementSegment(ansi.CreateViewStatementSegment):
 
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         AnySetOf(
             "SECURE",
             "RECURSIVE",
@@ -5827,7 +5919,7 @@ class CreateExternalTableSegment(BaseSegment):
                     OptionallyBracketed(
                         Sequence(
                             Ref("ExpressionSegment"),
-                            Ref("ConstraintPropertiesSegment", optional=True),
+                            Ref("InlineConstraintPropertiesSegment", optional=True),
                             Sequence(
                                 Ref.keyword("NOT", optional=True), "NULL", optional=True
                             ),
@@ -5881,6 +5973,11 @@ class CreateExternalTableSegment(BaseSegment):
             Sequence(
                 "COPY",
                 "GRANTS",
+            ),
+            Sequence(
+                "PARTITION_TYPE",
+                Ref("EqualsSegment"),
+                "USER_SPECIFIED",
             ),
             Sequence(
                 Sequence("WITH", optional=True),
@@ -5958,7 +6055,7 @@ class CopyIntoLocationStatementSegment(BaseSegment):
             "FROM",
             OneOf(
                 Ref("TableReferenceSegment"),
-                Bracketed(Ref("SelectStatementSegment")),
+                Bracketed(Ref("SelectableGrammar")),
             ),
             optional=True,
         ),
@@ -5975,7 +6072,9 @@ class CopyIntoLocationStatementSegment(BaseSegment):
                 Ref("EqualsSegment"),
                 Ref("FileFormatSegment"),
             ),
-            Ref("CopyOptionsSegment"),
+            # We explode the CopyOptionsSegments because the AnySetOf may appear in any
+            # order for these other elements as well.
+            *CopyOptionsSegment._copy_options_matchables,
             Sequence(
                 "VALIDATION_MODE",
                 Ref("EqualsSegment"),
@@ -6040,7 +6139,9 @@ class CopyIntoTableStatementSegment(BaseSegment):
                 Ref("EqualsSegment"),
                 Ref("FileFormatSegment"),
             ),
-            Ref("CopyOptionsSegment"),
+            # We explode the CopyOptionsSegments because the AnySetOf may appear in any
+            # order for these other elements as well.
+            *CopyOptionsSegment._copy_options_matchables,
         ),
         Sequence(
             "VALIDATION_MODE",
@@ -6321,7 +6422,7 @@ class CreateStageSegment(BaseSegment):
 
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         Ref.keyword("TEMPORARY", optional=True),
         "STAGE",
         Ref("IfNotExistsGrammar", optional=True),
@@ -6979,7 +7080,7 @@ class CreateRoleStatementSegment(ansi.CreateRoleStatementSegment):
 
     match_grammar = Sequence(
         "CREATE",
-        Ref("OrReplaceGrammar", optional=True),
+        Ref("AlterOrReplaceGrammar", optional=True),
         "ROLE",
         Ref("IfNotExistsGrammar", optional=True),
         Ref("RoleReferenceSegment"),
@@ -7002,7 +7103,7 @@ class CreateDatabaseRoleStatementSegment(BaseSegment):
     match_grammar = Sequence(
         "CREATE",
         Ref(
-            "OrReplaceGrammar",
+            "AlterOrReplaceGrammar",
             optional=True,
         ),
         "DATABASE",
@@ -7230,8 +7331,8 @@ class AlterTaskStatementSegment(BaseSegment):
         OneOf(
             "RESUME",
             "SUSPEND",
-            Sequence("REMOVE", "AFTER", Ref("ObjectReferenceSegment")),
-            Sequence("ADD", "AFTER", Ref("ObjectReferenceSegment")),
+            Sequence("REMOVE", "AFTER", Delimited(Ref("ObjectReferenceSegment"))),
+            Sequence("ADD", "AFTER", Delimited(Ref("ObjectReferenceSegment"))),
             Ref("AlterTaskSpecialSetClauseSegment"),
             Ref("AlterTaskSetClauseSegment"),
             Ref("AlterTaskUnsetClauseSegment"),
@@ -7935,6 +8036,7 @@ class OrderByClauseSegment(ansi.OrderByClauseSegment):
         Delimited(
             Sequence(
                 OneOf(
+                    Ref("BooleanLiteralGrammar"),
                     Ref("ColumnReferenceSegment"),
                     # Can `ORDER BY 1`
                     Ref("NumericLiteralSegment"),
@@ -8232,6 +8334,26 @@ class SetOperatorSegment(ansi.SetOperatorSegment):
     )
 
 
+class ArrayTypeSegment(ansi.ArrayTypeSegment):
+    """Prefix for array literals specifying the type."""
+
+    type = "array_type"
+    match_grammar = Sequence(
+        "ARRAY",
+        Ref("ArrayTypeSchemaSegment", optional=True),
+    )
+
+
+class ArrayTypeSchemaSegment(ansi.ArrayTypeSegment):
+    """Prefix for array literals specifying the type."""
+
+    type = "array_type_schema"
+    match_grammar = Bracketed(
+        Ref("DatatypeSegment"),
+        Sequence("NOT", "NULL", optional=True),
+    )
+
+
 class ShorthandCastSegment(BaseSegment):
     """A casting operation using '::'."""
 
@@ -8465,7 +8587,7 @@ class LambdaExpressionSegment(BaseSegment):
                 Delimited(
                     Sequence(
                         Ref("NakedIdentifierSegment"),
-                        Ref("DatatypeSegment"),
+                        Ref("DatatypeSegment", optional=True),
                     )
                 )
             ),
@@ -8614,4 +8736,121 @@ class DropPasswordPolicyStatementSegment(BaseSegment):
         "POLICY",
         Ref("IfExistsGrammar", optional=True),
         Ref("PasswordPolicyReferenceSegment"),
+    )
+
+
+class CreateRowAccessPolicyStatementSegment(BaseSegment):
+    """Create Row Access Policy.
+
+    As per https://docs.snowflake.com/en/sql-reference/sql/create-row-access-policy
+    """
+
+    type = "create_row_access_policy_statement"
+
+    match_grammar = Sequence(
+        "CREATE",
+        Ref("OrReplaceGrammar", optional=True),
+        "ROW",
+        "ACCESS",
+        "POLICY",
+        Ref("IfNotExistsGrammar", optional=True),
+        Ref("NakedIdentifierSegment"),
+        "AS",
+        Ref("FunctionParameterListGrammar"),
+        "RETURNS",
+        "BOOLEAN",
+        Ref("FunctionAssignerSegment"),
+        Ref("ExpressionSegment"),
+        Sequence(
+            "COMMENT",
+            Ref("EqualsSegment"),
+            Ref("QuotedLiteralSegment"),
+            optional=True,
+        ),
+    )
+
+
+class AlterRowAccessPolicyStatmentSegment(BaseSegment):
+    """Alter Row Access Policy Statement.
+
+    As per https://docs.snowflake.com/en/sql-reference/sql/alter-row-access-policy
+    """
+
+    type = "alter_row_access_policy_statement"
+
+    match_grammar = Sequence(
+        "ALTER",
+        "ROW",
+        "ACCESS",
+        "POLICY",
+        Ref("IfExistsGrammar", optional=True),
+        Ref("ObjectReferenceSegment"),
+        OneOf(
+            Sequence("RENAME", "TO", Ref("ObjectReferenceSegment")),
+            Sequence(
+                "SET",
+                "BODY",
+                Ref("FunctionAssignerSegment"),
+                Ref("ExpressionSegment"),
+            ),
+            Sequence("SET", Ref("TagEqualsSegment")),
+            Sequence("UNSET", "TAG", Delimited(Ref("TagReferenceSegment"))),
+            Sequence(
+                "SET", "COMMENT", Ref("EqualsSegment"), Ref("QuotedLiteralSegment")
+            ),
+            Sequence("UNSET", "COMMENT"),
+        ),
+    )
+
+
+class AlterTagStatementSegment(BaseSegment):
+    """A Snowflake Alter Tag Statement.
+
+    As per https://docs.snowflake.com/en/sql-reference/sql/alter-tag
+    """
+
+    type = "alter_tag_statement"
+    match_grammar = Sequence(
+        "ALTER",
+        "TAG",
+        Ref("IfExistsGrammar", optional=True),
+        Ref("ObjectReferenceSegment"),
+        OneOf(
+            Sequence(
+                "RENAME",
+                "TO",
+                Ref("ObjectReferenceSegment"),
+            ),
+            Sequence(
+                OneOf(
+                    "SET",
+                    "UNSET",
+                ),
+                Delimited(
+                    Sequence(
+                        "MASKING",
+                        "POLICY",
+                        Ref("ParameterNameSegment"),
+                    ),
+                ),
+            ),
+            Sequence(
+                "SET",
+                "COMMENT",
+                Ref("EqualsSegment"),
+                Ref("QuotedLiteralSegment"),
+            ),
+            Sequence("UNSET", "COMMENT"),
+            Sequence(
+                OneOf(
+                    "ADD",
+                    "DROP",
+                ),
+                "ALLOWED_VALUES",
+                Delimited(
+                    Ref("QuotedLiteralSegment"),
+                ),
+            ),
+            Sequence("UNSET", "ALLOWED_VALUES"),
+        ),
     )

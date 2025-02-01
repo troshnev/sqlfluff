@@ -48,6 +48,7 @@ def test__templater_dbt_profiles_dir_expanded(dbt_templater):
                     "profiles_dir": "~/.dbt",
                     "profile": "default",
                     "target": "dev",
+                    "target_path": "target",
                 }
             },
         },
@@ -59,6 +60,7 @@ def test__templater_dbt_profiles_dir_expanded(dbt_templater):
     )
     assert dbt_templater._get_profile() == "default"
     assert dbt_templater._get_target() == "dev"
+    assert dbt_templater._get_target_path() == "target"
 
 
 @pytest.mark.parametrize(
@@ -461,6 +463,14 @@ def test__templater_dbt_templating_absolute_path(
             "(models/my_new_project/unknown_macro.sql)\n  'invalid_macro' is "
             "undefined. This can happen when calling a macro that does not exist.",
             SQLTemplaterError,
+        ),
+        (
+            "compile_missing_table.sql",
+            # In the test suite we don't get a very helpful error message from dbt
+            # but in live testing, the inclusion of the triggering error sometimes
+            # gives us something much more useful.
+            "because dbt raised a fatal exception during compilation",
+            SQLFluffSkipFile,
         ),
     ],
 )

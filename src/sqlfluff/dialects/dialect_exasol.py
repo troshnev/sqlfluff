@@ -15,6 +15,7 @@ from sqlfluff.core.parser import (
     CommentSegment,
     Dedent,
     Delimited,
+    ImplicitIndent,
     Indent,
     LiteralKeywordSegment,
     LiteralSegment,
@@ -574,7 +575,12 @@ class QualifyClauseSegment(BaseSegment):
     """`QUALIFY` clause within `SELECT`."""
 
     type = "qualify_clause"
-    match_grammar = Sequence("QUALIFY", Ref("ExpressionSegment"))
+    match_grammar = Sequence(
+        "QUALIFY",
+        ImplicitIndent,
+        Ref("ExpressionSegment"),
+        Dedent,
+    )
 
 
 class LimitClauseSegment(BaseSegment):
@@ -1571,7 +1577,9 @@ class UpdateStatementSegment(BaseSegment):
 
     match_grammar = Sequence(
         "UPDATE",
+        Indent,
         OneOf(Ref("TableReferenceSegment"), Ref("AliasedTableReferenceGrammar")),
+        Dedent,
         Ref("SetClauseListSegment"),
         Ref("FromClauseSegment", optional=True),
         Ref("WhereClauseSegment", optional=True),

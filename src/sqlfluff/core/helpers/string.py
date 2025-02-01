@@ -38,29 +38,43 @@ def split_colon_separated_string(in_str: str) -> Tuple[Tuple[str, ...], str]:
     >>> split_colon_separated_string("a")
     ((), 'a')
 
-    NOTE: This also includes some provisions for values which may be
-    Windows paths containing colons and NOT stripping those.
+    NOTE: This also includes some heuristics for legit values containing colon.
     >>> split_colon_separated_string("foo:bar:C:\\Users")
     (('foo', 'bar'), 'C:\\Users')
+    >>> split_colon_separated_string('foo:bar:{"k":"v"}')
+    (('foo', 'bar'), '{"k":"v"}')
+    >>> split_colon_separated_string('foo:bar:[{"k":"v"}]')
+    (('foo', 'bar'), '[{"k":"v"}]')
     """
     config_path: List[str] = []
-    for element in in_str.split(":"):
-        # If the next element begins with a backslash, and the previous
-        # one had length == 1,  then this is probably a windows path.
-        # In which case, rejoin them together.
+    leftover = in_str
+    while ":" in leftover:
+        element, _, value = leftover.partition(":")
         element = element.strip()
-        if (
-            element
-            and element[0] == "\\"
-            and config_path[-1]
-            and len(config_path[-1]) == 1
-        ):
-            config_path[-1] = config_path[-1] + ":" + element
-        else:
-            # Otherwise just add it to the path.
-            config_path.append(element)
+        value = value.strip()
+        config_path.append(element)
+        leftover = value
+        if not should_split_on_colon(value):
+            break
 
+    # last part - actual value
+    config_path.append(leftover)
     return tuple(config_path[:-1]), config_path[-1]
+
+
+def should_split_on_colon(value: str) -> bool:
+    """Heuristic for legit values containing comma."""
+    if len(value) >= 2 and value[1] == ":" and value[2] == "\\":
+        # Likely a Windows path
+        return False
+    if len(value) >= 2 and (value[0] == "[" and value[-1] == "]"):
+        # Likely a JSON array
+        return False
+    if len(value) >= 2 and (value[0] == "{" and value[-1] == "}"):
+        # Likely a JSON object
+        return False
+
+    return True
 
 
 def split_comma_separated_string(raw: Union[str, List[str]]) -> List[str]:
@@ -69,3 +83,36 @@ def split_comma_separated_string(raw: Union[str, List[str]]) -> List[str]:
         return [s.strip() for s in raw.split(",") if s.strip()]
     assert isinstance(raw, list)
     return raw
+
+
+def get_trailing_whitespace_from_string(in_str: str) -> str:
+    r"""Returns the trailing whitespace from a string.
+
+    Designed to work with source strings of placeholders.
+
+    >>> get_trailing_whitespace_from_string("")
+    ''
+    >>> get_trailing_whitespace_from_string("foo")
+    ''
+    >>> get_trailing_whitespace_from_string("   ")
+    '   '
+    >>> get_trailing_whitespace_from_string("  foo ")
+    ' '
+    >>> get_trailing_whitespace_from_string("foo\n")
+    '\n'
+    >>> get_trailing_whitespace_from_string("bar  \t  \n  \r ")
+    '  \t  \n  \r '
+    """
+    whitespace_chars = " \t\r\n"
+    if not in_str or in_str[-1] not in whitespace_chars:
+        return ""  # No whitespace
+    for i in range(1, len(in_str)):
+        if in_str[-(i + 1)] not in whitespace_chars:
+            # NOTE: The partial whitespace case is included as
+            # future-proofing. In testing it appears it is never
+            # required, and so only covered in the doctests above.
+            # doctest coverage isn't included in the overall coverage
+            # check and so the line below is excluded.
+            return in_str[-i:]  # pragma: no cover
+    else:
+        return in_str  # All whitespace

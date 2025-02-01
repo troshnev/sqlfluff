@@ -703,8 +703,11 @@ def assert_structure(yaml_loader, path, code_only=True, include_meta=False):
         ("jinja_c_dbt/dbt_builtins_ref", True, False),
         ("jinja_c_dbt/dbt_builtins_source", True, False),
         ("jinja_c_dbt/dbt_builtins_this", True, False),
+        ("jinja_c_dbt/dbt_builtins_this_callable", True, False),
         ("jinja_c_dbt/dbt_builtins_var_default", True, False),
         ("jinja_c_dbt/dbt_builtins_test", True, False),
+        ("jinja_c_dbt/dbt_builtins_zip", True, False),
+        ("jinja_c_dbt/dbt_builtins_zip_strict", True, False),
         # do directive
         ("jinja_e/jinja", True, False),
         # case sensitivity and python literals
@@ -713,6 +716,8 @@ def assert_structure(yaml_loader, path, code_only=True, include_meta=False):
         ("jinja_g_macros/jinja", True, False),
         # Excluding macros
         ("jinja_exclude_macro_path/jinja", True, False),
+        # Excluding macros with running from subdirectory
+        ("jinja_exclude_macro_path/model_directory/jinja_sub_directory", True, False),
         # jinja raw tag
         ("jinja_h_macros/jinja", True, False),
         ("jinja_i_raw/raw_tag", True, False),
@@ -1712,29 +1717,32 @@ def test__templater_jinja_large_file_check():
 
 
 @pytest.mark.parametrize(
-    "ignore, expected_violation",
+    "in_str, ignore, expected_violation",
     [
         (
+            """WITH a AS ({{  b(c=d, e=f) }}) SELECT * FROM final""",
             "",
-            SQLTemplaterError(
-                "Undefined jinja template variable: 'test_event_cadence'"
-            ),
+            SQLTemplaterError("Undefined jinja template variable: 'b'"),
         ),
-        ("templating", None),
+        ("""WITH a AS ({{  b(c=d, e=f) }}) SELECT * FROM final""", "templating", None),
+        (
+            # https://github.com/sqlfluff/sqlfluff/issues/6360
+            """{% for tbl in tbl_list %}SELECT a FROM {{ tbl }};{% endfor %}""",
+            "",
+            SQLTemplaterError("Undefined jinja template variable: 'tbl_list'"),
+        ),
+        (
+            """SELECT a FROM {{ tbl['name'] }};""",
+            "",
+            SQLTemplaterError("Undefined jinja template variable: 'tbl'"),
+        ),
     ],
 )
-def test_jinja_undefined_callable(ignore, expected_violation):
+def test_jinja_undefined_callable(in_str, ignore, expected_violation):
     """Test undefined callable returns TemplatedFile and sensible error."""
     templater = JinjaTemplater()
     templated_file, violations = templater.process(
-        in_str="""WITH streams_cadence_test AS (
-{{  test_event_cadence(
-    model= ref('fct_recording_progression_stream'),
-    grouping_column='archive_id', time_column='timestamp',
-    date_part='minute', threshold=1) }}
-)
-SELECT * FROM final
-""",
+        in_str=in_str,
         fname="test.sql",
         config=FluffConfig(overrides={"dialect": "ansi", "ignore": ignore}),
     )

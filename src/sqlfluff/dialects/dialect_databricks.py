@@ -12,19 +12,23 @@ from sqlfluff.core.parser import (
     BaseSegment,
     Bracketed,
     CodeSegment,
+    CommentSegment,
     Dedent,
     Delimited,
     IdentifierSegment,
     Indent,
     Matchable,
     OneOf,
+    OptionallyBracketed,
     Ref,
+    RegexLexer,
     RegexParser,
     Sequence,
     StringLexer,
     StringParser,
     SymbolSegment,
     TypedParser,
+    WordSegment,
 )
 from sqlfluff.dialects import dialect_ansi as ansi
 from sqlfluff.dialects import dialect_sparksql as sparksql
@@ -60,7 +64,34 @@ databricks_dialect.insert_lexer_matchers(
     before="equals",
 )
 
+
+databricks_dialect.insert_lexer_matchers(
+    # Notebook Cell Delimiter:
+    # https://learn.microsoft.com/en-us/azure/databricks/notebooks/notebook-export-import#sql-1
+    [
+        RegexLexer("command", r"(\r?\n){2}-- COMMAND ----------(\r?\n)", CodeSegment),
+    ],
+    before="newline",
+)
+
+databricks_dialect.insert_lexer_matchers(
+    # Databricks Notebook Start:
+    # needed to insert "so early" to avoid magic + notebook
+    # start to be interpreted as inline comments
+    # https://learn.microsoft.com/en-us/azure/databricks/notebooks/notebooks-code#language-magic
+    [
+        RegexLexer(
+            "notebook_start", r"-- Databricks notebook source(\r?\n){1}", CommentSegment
+        ),
+        RegexLexer("magic_line", r"(-- MAGIC)( [^%]{1})([^\n]*)", CodeSegment),
+        RegexLexer("magic_start", r"(-- MAGIC %)([^\n]{2,})(\r?\n)", CodeSegment),
+    ],
+    before="inline_comment",
+)
+
+
 databricks_dialect.add(
+    CommandCellSegment=TypedParser("command", CodeSegment, type="statement_terminator"),
     DoubleQuotedUDFBody=TypedParser(
         "double_quote",
         CodeSegment,
@@ -108,7 +139,10 @@ databricks_dialect.add(
     ),
     ColumnDefaultGrammar=Sequence(
         "DEFAULT",
-        Ref("LiteralGrammar"),
+        OneOf(
+            Ref("LiteralGrammar"),
+            Ref("FunctionSegment"),
+        ),
     ),
     ConstraintOptionGrammar=Sequence(
         Sequence("ENABLE", "NOVALIDATE", optional=True),
@@ -201,9 +235,17 @@ databricks_dialect.add(
             optional=True,
         ),
     ),
+    NotebookStart=TypedParser("notebook_start", CommentSegment, type="notebook_start"),
+    MagicLineGrammar=TypedParser("magic_line", CodeSegment, type="magic_line"),
+    MagicStartGrammar=TypedParser("magic_start", CodeSegment, type="magic_start"),
+    VariableNameIdentifierSegment=OneOf(
+        Ref("NakedIdentifierSegment"),
+        Ref("BackQuotedIdentifierSegment"),
+    ),
 )
 
 databricks_dialect.replace(
+    DelimiterGrammar=OneOf(Ref("SemicolonSegment"), Ref("CommandCellSegment")),
     # https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-aux-describe-volume.html
     DescribeObjectGrammar=sparksql_dialect.get_grammar("DescribeObjectGrammar").copy(
         insert=[
@@ -211,7 +253,8 @@ databricks_dialect.replace(
                 "VOLUME",
                 Ref("VolumeReferenceSegment"),
             ),
-        ]
+        ],
+        at=0,
     ),
     FunctionContentsExpressionGrammar=OneOf(
         Ref("ExpressionSegment"),
@@ -330,10 +373,70 @@ databricks_dialect.replace(
         "NOT",
         "NULL",
     ),
+    FunctionNameIdentifierSegment=OneOf(
+        TypedParser("word", WordSegment, type="function_name_identifier"),
+        Ref("BackQuotedIdentifierSegment"),
+    ),
 )
 
 
-# Object References
+class IdentifierClauseSegment(BaseSegment):
+    """An `IDENTIFIER` clause segment.
+
+    https://docs.databricks.com/en/sql/language-manual/sql-ref-names-identifier-clause.html
+    """
+
+    type = "identifier_clause_segment"
+    match_grammar = Sequence(
+        "IDENTIFIER",
+        Bracketed(Ref("ExpressionSegment")),
+    )
+
+
+class ObjectReferenceSegment(ansi.ObjectReferenceSegment):
+    """A reference to an object."""
+
+    # Allow whitespace
+    match_grammar: Matchable = Delimited(
+        OneOf(Ref("SingleIdentifierGrammar"), Ref("IdentifierClauseSegment")),
+        delimiter=Ref("ObjectReferenceDelimiterGrammar"),
+        terminators=[Ref("ObjectReferenceTerminatorGrammar")],
+        allow_gaps=False,
+    )
+
+
+class DatabaseReferenceSegment(ObjectReferenceSegment):
+    """A reference to a database."""
+
+    type = "database_reference"
+
+
+class TableReferenceSegment(ObjectReferenceSegment):
+    """A reference to an table, CTE, subquery or alias."""
+
+    type = "table_reference"
+
+
+class SchemaReferenceSegment(ObjectReferenceSegment):
+    """A reference to a schema."""
+
+    type = "schema_reference"
+
+
+class TableExpressionSegment(sparksql.TableExpressionSegment):
+    """The main table expression e.g. within a FROM clause.
+
+    Enhance to allow for additional clauses allowed in Spark and Delta Lake.
+    """
+
+    match_grammar = sparksql.TableExpressionSegment.match_grammar.copy(
+        insert=[
+            Ref("IdentifierClauseSegment"),
+        ],
+        before=Ref("ValuesClauseSegment"),
+    )
+
+
 class CatalogReferenceSegment(ansi.ObjectReferenceSegment):
     """A reference to a catalog.
 
@@ -571,6 +674,24 @@ class MaskStatementSegment(BaseSegment):
     )
 
 
+class ColumnFieldDefinitionSegment(ansi.ColumnDefinitionSegment):
+    """A column field definition, e.g. for CREATE TABLE or ALTER TABLE.
+
+    This supports the iceberg syntax and allows for iceberg syntax such
+    as ADD COLUMN a.b.
+    """
+
+    match_grammar: Matchable = Sequence(
+        Ref("ColumnReferenceSegment"),  # Column name
+        Ref("DatatypeSegment"),  # Column type
+        Bracketed(Anything(), optional=True),  # For types like VARCHAR(100)
+        AnyNumberOf(
+            Ref("ColumnConstraintSegment", optional=True),
+            Ref("ColumnDefaultGrammar", optional=True),  # For default values
+        ),
+    )
+
+
 class PropertyNameSegment(sparksql.PropertyNameSegment):
     """A property name segment. Databricks allows for back quoted segments."""
 
@@ -716,7 +837,7 @@ class AlterTableStatementSegment(sparksql.AlterTableStatementSegment):
                 "DROP",
                 OneOf("COLUMN", "COLUMNS", optional=True),
                 Ref("IfExistsGrammar", optional=True),
-                Bracketed(
+                OptionallyBracketed(
                     Delimited(
                         Ref("ColumnReferenceSegment"),
                     ),
@@ -953,6 +1074,8 @@ class StatementSegment(sparksql.StatementSegment):
             Ref("FunctionParameterListGrammarWithComments"),
             Ref("DeclareOrReplaceVariableStatementSegment"),
             Ref("CommentOnStatementSegment"),
+            # Notebook grammar
+            Ref("MagicCellStatementSegment"),
         ]
     )
 
@@ -1043,7 +1166,24 @@ class CreateDatabricksFunctionStatementSegment(BaseSegment):
         Ref("FunctionParameterListGrammarWithComments"),
         Sequence(
             "RETURNS",
-            Ref("DatatypeSegment"),
+            OneOf(
+                Ref("DatatypeSegment"),
+                Sequence(
+                    "TABLE",
+                    Sequence(
+                        Bracketed(
+                            Delimited(
+                                Sequence(
+                                    Ref("ColumnReferenceSegment"),
+                                    Ref("DatatypeSegment"),
+                                    Ref("CommentGrammar", optional=True),
+                                ),
+                            ),
+                        ),
+                        optional=True,
+                    ),
+                ),
+            ),
             optional=True,
         ),
         Ref("FunctionDefinitionGrammar"),
@@ -1404,4 +1544,86 @@ class CommentOnStatementSegment(BaseSegment):
         ),
         "IS",
         OneOf(Ref("QuotedLiteralSegment"), "NULL"),
+    )
+
+
+class FunctionNameSegment(BaseSegment):
+    """Function name, including any prefix bits, e.g. project or schema."""
+
+    type = "function_name"
+    match_grammar: Matchable = Sequence(
+        # Project name, schema identifier, etc.
+        AnyNumberOf(
+            Sequence(
+                Ref("SingleIdentifierGrammar"),
+                Ref("DotSegment"),
+            ),
+            terminators=[Ref("BracketedSegment")],
+        ),
+        # Base function name
+        Ref("FunctionNameIdentifierSegment", terminators=[Ref("BracketedSegment")]),
+        allow_gaps=False,
+    )
+
+
+class MagicCellStatementSegment(BaseSegment):
+    """Treat -- MAGIC %md/py/sh/... Cells as their own segments.
+
+    N.B. This is a workaround, to make databricks notebooks
+    with leading parsable by sqlfluff.
+
+    https://learn.microsoft.com/en-us/azure/databricks/notebooks/notebooks-code#language-magic
+    """
+
+    type = "magic_cell_segment"
+    match_grammar = Sequence(
+        Ref("NotebookStart", optional=True),
+        Ref("MagicStartGrammar"),
+        AnyNumberOf(Ref("MagicLineGrammar"), optional=True),
+        terminators=[Ref("CommandCellSegment", optional=True)],
+        reset_terminators=True,
+    )
+
+
+class SetVariableStatementSegment(BaseSegment):
+    """A `SET VARIABLE` statement used to set session variables.
+
+    https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-aux-set-variable.html
+    """
+
+    type = "set_variable_statement"
+
+    # set var v1=val, v2=val2;
+    set_kv_pair = Sequence(
+        Delimited(
+            Ref("VariableNameIdentifierSegment"),
+            Ref("EqualsSegment"),
+            OneOf("DEFAULT", OptionallyBracketed(Ref("ExpressionSegment"))),
+        )
+    )
+    # set var (v1,v2) = (values(100,200))
+    set_bracketed = Sequence(
+        Bracketed(
+            Ref("VariableNameIdentifierSegment"),
+        ),
+        Ref("EqualsSegment"),
+        Bracketed(
+            OneOf(
+                Ref("SelectStatementSegment"),
+                Ref("ValuesClauseSegment"),
+            )
+        ),
+    )
+
+    match_grammar = Sequence(
+        "SET",
+        OneOf(
+            "VAR",
+            "VARIABLE",
+        ),
+        OneOf(
+            set_kv_pair,
+            set_bracketed,
+        ),
+        allow_gaps=True,
     )

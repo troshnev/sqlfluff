@@ -228,8 +228,8 @@ def test__cli__command_extra_config_fail():
             ],
         ],
         assert_output_contains=(
-            "Extra config 'test/fixtures/cli/extra_configs/.sqlfluffsdfdfdfsfd' does "
-            "not exist."
+            "Extra config path 'test/fixtures/cli/extra_configs/.sqlfluffsdfdfdfsfd' "
+            "does not exist."
         ),
     )
 
@@ -816,6 +816,33 @@ def test__cli__command_lint_warning():
         lint,
         [
             "test/fixtures/cli/warning_a.sql",
+        ],
+    )
+    # Because we're only warning. The command should pass.
+    assert result.exit_code == 0
+    # The output should still say PASS.
+    assert "PASS" in result.output.strip()
+    # But should also contain the warnings.
+    # NOTE: Not including the whole description because it's too long.
+    assert (
+        "L:   4 | P:   9 | LT01 | WARNING: Expected single whitespace"
+        in result.output.strip()
+    )
+
+
+def test__cli__command_lint_warning_name_rule():
+    """Test that configuring warnings works.
+
+    For this test the warnings are configured using
+    inline config in the file. That's more for simplicity
+    however the code paths should be the same if it's
+    configured in a file.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        lint,
+        [
+            "test/fixtures/cli/warning_name_a.sql",
         ],
     )
     # Because we're only warning. The command should pass.
@@ -1652,7 +1679,7 @@ def test__cli__command_lint_serialize_multiple_files(serialize, write_file, tmp_
         # SQLFluff produces trailing newline
         if result[-1] == "":
             del result[-1]
-        assert len(result) == 12
+        assert len(result) == 16
     else:
         raise Exception
 
@@ -1778,6 +1805,7 @@ def test__cli__command_lint_serialize_github_annotation():
         (
             "test/fixtures/linter/identifier_capitalisation.sql",
             (
+                "::group::{filename}\n"
                 "::error title=SQLFluff,file={filename},"
                 "line=3,col=5,endLine=3,endColumn=8::"
                 "RF02: Unqualified reference 'foo' found in select with more than one "
@@ -1805,12 +1833,14 @@ def test__cli__command_lint_serialize_github_annotation():
                 "line=5,col=18,endLine=5,endColumn=22::"
                 "CP02: Unquoted identifiers must be consistently lower case. "
                 "[capitalisation.identifiers]\n"
+                "::endgroup::\n"
                 # SQLFluff produces trailing newline
             ),
         ),
         (
             "test/fixtures/linter/jinja_spacing.sql",
             (
+                "::group::{filename}\n"
                 "::error title=SQLFluff,file={filename},"
                 "line=3,col=15,endLine=3,endColumn=22::JJ01: "
                 "Jinja tags should have a single whitespace on either "
@@ -1818,6 +1848,7 @@ def test__cli__command_lint_serialize_github_annotation():
                 # .format() method.
                 "side: {{{{foo}}}} "
                 "[jinja.padding]\n"
+                "::endgroup::\n"
             ),
         ),
     ],
@@ -1843,7 +1874,6 @@ def test__cli__command_lint_serialize_github_annotation_native(
         ],
         ret_code=1,
     )
-
     assert result.output == expected_output.format(filename=fpath_normalised)
 
 
@@ -2272,6 +2302,44 @@ def test__cli__fix_multiple_errors_show_errors():
         "L:  42 | P:  45 | RF02 | Unqualified reference 'owner_id' found in "
         "select with more than" in result.output
     )
+
+
+def test__cli__fix_show_parse_errors():
+    """Test the fix --show-lint-violations option with parser error."""
+    result = invoke_assert_code(
+        ret_code=1,
+        args=[
+            fix,
+            [
+                "--show-lint-violations",
+                "test/fixtures/linter/parse_lex_error.sql",
+            ],
+        ],
+    )
+    check_a = "1 templating/parsing errors found"
+    assert check_a not in result.output
+    assert (
+        "L:   9 | P:  21 |  PRS | Couldn't find closing bracket for opening bracket."
+        in result.output
+    )
+    assert "L:   9 | P:  22 |  LXR | Unable to lex characters: " in result.output
+
+    # Calling without show-lint-violations
+    result = invoke_assert_code(
+        ret_code=1,
+        args=[
+            fix,
+            [
+                "test/fixtures/linter/parse_lex_error.sql",
+            ],
+        ],
+    )
+    assert check_a in result.output
+    assert (
+        "L:   9 | P:  21 |  PRS | Couldn't find closing bracket for opening bracket."
+        not in result.output
+    )
+    assert "L:   9 | P:  22 |  LXR | Unable to lex characters: " not in result.output
 
 
 def test__cli__multiple_files__fix_multiple_errors_show_errors():

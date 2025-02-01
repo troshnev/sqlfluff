@@ -56,6 +56,7 @@ class DbtConfigArgs:
     profiles_dir: Optional[str] = None
     profile: Optional[str] = None
     target: Optional[str] = None
+    target_path: Optional[str] = None
     threads: int = 1
     single_threaded: bool = False
     # dict in 1.5.x onwards, json string before.
@@ -176,13 +177,13 @@ class DbtTemplater(JinjaTemplater):
     sequential_fail_limit = 3
     adapters = {}
 
-    def __init__(self, **kwargs):
+    def __init__(self, override_context: Optional[Dict[str, Any]] = None):
         self.sqlfluff_config = None
         self.formatter = None
         self.project_dir = None
         self.profiles_dir = None
         self.working_dir = os.getcwd()
-        super().__init__(**kwargs)
+        super().__init__(override_context=override_context)
 
     def config_pairs(self):
         """Returns info about the given templater for output by the cli."""
@@ -282,6 +283,7 @@ class DbtTemplater(JinjaTemplater):
                 project_dir=self.project_dir,
                 profiles_dir=self.profiles_dir,
                 profile=self._get_profile(),
+                target_path=self._get_target_path(),
                 vars=cli_vars,
                 threads=1,
             ),
@@ -293,6 +295,7 @@ class DbtTemplater(JinjaTemplater):
                 profiles_dir=self.profiles_dir,
                 profile=self._get_profile(),
                 target=self._get_target(),
+                target_path=self._get_target_path(),
                 vars=cli_vars,
                 threads=1,
             )
@@ -433,6 +436,12 @@ class DbtTemplater(JinjaTemplater):
         """Get a dbt target name from the configuration."""
         return self.sqlfluff_config.get_section(
             (self.templater_selector, self.name, "target")
+        )
+
+    def _get_target_path(self):
+        """Get a dbt target path from the configuration."""
+        return self.sqlfluff_config.get_section(
+            (self.templater_selector, self.name, "target_path")
         )
 
     def _get_cli_vars(self) -> dict:
@@ -696,20 +705,13 @@ class DbtTemplater(JinjaTemplater):
                 # The explanation on the undefined macro error is already fairly
                 # explanatory, so just pass it straight through.
                 raise SQLTemplaterError(str(err))
-            except Exception as err:  # pragma: no cover
-                # NOTE: We use .error() here rather than .exception() because
-                # for most users, the trace which accompanies the latter isn't
-                # particularly helpful.
-                templater_logger.error(
-                    "Fatal dbt compilation error on %s. This occurs most often "
-                    "during incorrect sorting of ephemeral models before linting. "
-                    "Please report this error on github at "
-                    "https://github.com/sqlfluff/sqlfluff/issues, including "
-                    "both the raw and compiled sql for the model affected.",
-                    fname,
-                )
-                # Additional error logging in case we get a fatal dbt error.
-                raise SQLFluffSkipFile(  # pragma: no cover
+            except Exception as err:
+                # This happens if there's a fatal error at compile time. That
+                # can sometimes happen for SQLFluff related reasons (it used
+                # to happen if we tried to compile ephemeral models in the
+                # wrong order), but more often because a macro tries to query
+                # a table at compile time which doesn't exist.
+                raise SQLFluffSkipFile(
                     f"Skipped file {fname} because dbt raised a fatal "
                     f"exception during compilation: {err!s}"
                 )

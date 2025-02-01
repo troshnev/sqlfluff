@@ -22,3 +22,17 @@ AS SELECT
     a,
     b
 FROM live.taxi_raw;
+
+CREATE OR REFRESH MATERIALIZED VIEW temp_table
+AS
+SELECT 1 AS ID;
+
+CREATE OR REFRESH MATERIALIZED VIEW dlt_view (
+    a STRING COMMENT 'a',
+    b TIMESTAMP COMMENT 'b'
+)
+COMMENT 'DLT materialized view'
+AS SELECT
+    a,
+    b
+FROM live.dlt_bronze;

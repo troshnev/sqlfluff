@@ -1,7 +1,7 @@
 .. _apiref:
 
-Python API Reference
-====================
+Python API
+==========
 
 SQLFluff exposes a public api for other python applications to use.
 A basic example of this usage is given here, with the documentation
@@ -62,4 +62,4 @@ Advanced API reference
 
 
 .. automodule:: sqlfluff.core
-   :members: Linter, Lexer, Parser, FluffConfig
+   :members: Linter, Lexer, Parser

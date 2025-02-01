@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+import sqlfluff
 from sqlfluff.core import FluffConfig, Linter
 from sqlfluff.core.errors import SQLFluffUserError
 from sqlfluff.core.templaters import (
@@ -85,17 +86,26 @@ def test__config__nested_config_tests():
             assert "LT02" not in [c[0] for c in violations[k]]
 
 
-def test__config__templater_selection():
+@pytest.mark.parametrize(
+    "templater_name,templater_class,raises_error",
+    [
+        ("raw", RawTemplater, False),
+        ("jinja", JinjaTemplater, False),
+        ("python", PythonTemplater, False),
+        ("placeholder", PlaceholderTemplater, False),
+        ("afefhlsakufe", None, True),
+        ("", None, True),
+    ],
+)
+def test__config__templater_selection(templater_name, templater_class, raises_error):
     """Test template selection by name."""
-    cfg = FluffConfig(overrides={"dialect": "ansi"})
-    assert cfg.get_templater().__class__ is JinjaTemplater
-    assert cfg.get_templater("raw").__class__ is RawTemplater
-    assert cfg.get_templater("python").__class__ is PythonTemplater
-    assert cfg.get_templater("jinja").__class__ is JinjaTemplater
-    assert cfg.get_templater("placeholder").__class__ is PlaceholderTemplater
-
-    with pytest.raises(ValueError):
-        cfg.get_templater("afefhlsakufe")
+    if raises_error:
+        with pytest.raises(SQLFluffUserError):
+            FluffConfig(overrides={"dialect": "ansi", "templater": templater_name})
+    else:
+        cfg = FluffConfig(overrides={"dialect": "ansi", "templater": templater_name})
+        assert cfg.get_templater().__class__ is templater_class
+        assert cfg._configs["core"]["templater_obj"].__class__ is templater_class
 
 
 def test__config__glob_exclude_config_tests():
@@ -329,6 +339,14 @@ def test__process_inline_config():
     cfg.process_inline_config("-- sqlfluff:jinja:my_path:c:\\foo", "test.sql")
     assert cfg.get("my_path", section="jinja") == "c:\\foo"
 
+    # Check that JSON objects are not mangled
+    cfg.process_inline_config('-- sqlfluff:jinja:my_dict:{"k":"v"}', "test.sql")
+    assert cfg.get("my_dict", section="jinja") == '{"k":"v"}'
+
+    # Check that JSON arrays are not mangled
+    cfg.process_inline_config('-- sqlfluff:jinja:my_dict:[{"k":"v"}]', "test.sql")
+    assert cfg.get("my_dict", section="jinja") == '[{"k":"v"}]'
+
 
 @pytest.mark.parametrize(
     "raw_sql",
@@ -364,3 +382,15 @@ def test__process_raw_file_for_config(raw_sql):
     # internal list attributes should have overridden exploded list values
     assert cfg.get("rule_allowlist") == ["LT05", "LT06"]
     assert cfg.get("rule_denylist") == ["LT01", "LT02"]
+
+
+def test__api__immutable_config():
+    """Tests that a config is not mutated when parsing."""
+    config = FluffConfig.from_path(
+        "test/fixtures/api/config_path_test/extra_configs/.sqlfluff"
+    )
+    assert config.get("dialect") == "ansi"
+    sqlfluff.parse(
+        "-- sqlfluff:dialect: postgres\nSELECT * FROM table1\n", config=config
+    )
+    assert config.get("dialect") == "ansi"

@@ -49,6 +49,7 @@ from sqlfluff.core.linter.linting_result import LintingResult
 from sqlfluff.core.parser import Lexer, Parser
 from sqlfluff.core.parser.segments.base import BaseSegment, SourceFix
 from sqlfluff.core.rules import BaseRule, RulePack, get_ruleset
+from sqlfluff.core.rules.fix import LintFix
 from sqlfluff.core.rules.noqa import IgnoreMask
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -78,9 +79,16 @@ class Linter:
         user_rules: Optional[List[Type[BaseRule]]] = None,
         exclude_rules: Optional[List[str]] = None,
     ) -> None:
-        # Store the config object
-        self.config = FluffConfig.from_kwargs(
-            config=config,
+        if config and (dialect or rules or exclude_rules):
+            raise ValueError(  # pragma: no cover
+                "Linter does not support setting both `config` and any of "
+                "`dialect`, `rules` or `exclude_rules`. The latter are "
+                "provided as convenience methods to avoid needing to "
+                "set the `config` object. If using `config`, please "
+                "provide all the other values within that object."
+            )
+        # Use the provided config or create one from the kwargs.
+        self.config = config or FluffConfig.from_kwargs(
             dialect=dialect,
             rules=rules,
             exclude_rules=exclude_rules,
@@ -377,7 +385,7 @@ class Linter:
         # the fixes themselves.
         initial_linting_errors = []
         # A placeholder for the fixes we had on the previous loop
-        last_fixes = None
+        last_fixes: Optional[List[LintFix]] = None
         # Keep a set of previous versions to catch infinite loops.
         previous_versions: Set[Tuple[str, Tuple["SourceFix", ...]]] = {(tree.raw, ())}
         # Keep a buffer for recording rule timings.
@@ -499,12 +507,18 @@ class Linter:
                             cls._report_conflicting_fixes_same_anchor(message)
                             for lint_result in linting_errors:
                                 lint_result.fixes = []
-                        elif fixes == last_fixes:  # pragma: no cover
+                        elif fixes == last_fixes:
                             # If we generate the same fixes two times in a row,
                             # that means we're in a loop, and we want to stop.
                             # (Fixes should address issues, hence different
                             # and/or fewer fixes next time.)
-                            cls._warn_unfixable(crawler.code)
+                            # This is most likely because fixes could not be safely
+                            # applied last time, so we should stop gracefully.
+                            linter_logger.debug(
+                                f"Fixes generated for {crawler.code} are the same as "
+                                "the previous pass. Assuming that we cannot apply them "
+                                "safely. Passing gracefully."
+                            )
                         else:
                             # This is the happy path. We have fixes, now we want to
                             # apply them.
@@ -514,7 +528,9 @@ class Linter:
                                 config.get("dialect_obj"),
                                 crawler.code,
                                 anchor_info,
+                                fix_even_unparsable=config.get("fix_even_unparsable"),
                             )
+
                             # Check for infinite loops. We use a combination of the
                             # fixed templated file and the list of source fixes to
                             # apply.
@@ -522,7 +538,14 @@ class Linter:
                                 new_tree.raw,
                                 tuple(new_tree.source_fixes),
                             )
-                            if not _valid:
+                            # Was anything actually applied? If not, then the fixes we
+                            # had cannot be safely applied and we should stop trying.
+                            if loop_check_tuple == (tree.raw, tuple(tree.source_fixes)):
+                                linter_logger.debug(
+                                    f"Fixes for {crawler.code} could not be safely be "
+                                    "applied. Likely due to initially unparsable file."
+                                )
+                            elif not _valid:
                                 # The fixes result in an invalid file. Don't apply
                                 # the fix and skip onward. Show a warning.
                                 linter_logger.warning(
@@ -881,7 +904,7 @@ class Linter:
             self.formatter.dispatch_template_header(fname, self.config, config)
 
         # Just use the local config from here:
-        config = config or self.config
+        config = (config or self.config).copy()
 
         # Scan the raw file for config commands.
         config.process_raw_file_for_config(in_str, fname)

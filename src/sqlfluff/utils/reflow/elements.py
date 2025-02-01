@@ -99,6 +99,23 @@ class ReflowElement:
             for seg in self.segments
         )
 
+    def is_all_unrendered(self) -> bool:
+        """Return whether this element is all unrendered.
+
+        Returns True if contains only whitespace, indents, template loops
+        or placeholders.
+
+        Note:
+        * ReflowBlocks will contain the placeholders and loops
+        * ReflowPoints will contain whitespace, indents and newlines.
+        """
+        for seg in self.segments:
+            if not seg.is_type(
+                "whitespace", "placeholder", "newline", "indent", "template_loop"
+            ):
+                return False
+        return True
+
 
 @dataclass(frozen=True)
 class ReflowBlock(ReflowElement):
@@ -140,6 +157,13 @@ class ReflowBlock(ReflowElement):
     #: of the segment in this block.
     #: See :ref:`layoutspacingconfig`
     line_position_configs: Dict[int, str]
+    #: Desired line position for this block's keywords.
+    #: See :ref:`layoutspacingconfig`
+    keyword_line_position: Optional[str]
+    #: Desired keyword line position configurations for parent segments
+    #: of the segment in this block.
+    #: See :ref:`layoutspacingconfig`
+    keyword_line_position_configs: Dict[int, str]
 
     @classmethod
     def from_config(
@@ -158,6 +182,7 @@ class ReflowBlock(ReflowElement):
         block_config = config.get_block_config(cls._class_types(segments), depth_info)
         stack_spacing_configs = {}
         line_position_configs = {}
+        keyword_line_position_configs = {}
         for hash, class_types in zip(
             depth_info.stack_hashes, depth_info.stack_class_types
         ):
@@ -166,6 +191,8 @@ class ReflowBlock(ReflowElement):
                 stack_spacing_configs[hash] = cfg.spacing_within
             if cfg.line_position:
                 line_position_configs[hash] = cfg.line_position
+            if cfg.keyword_line_position:
+                keyword_line_position_configs[hash] = cfg.keyword_line_position
         return cls(
             segments=segments,
             spacing_before=block_config.spacing_before,
@@ -174,6 +201,8 @@ class ReflowBlock(ReflowElement):
             depth_info=depth_info,
             stack_spacing_configs=stack_spacing_configs,
             line_position_configs=line_position_configs,
+            keyword_line_position=block_config.keyword_line_position,
+            keyword_line_position_configs=keyword_line_position_configs,
         )
 
 
@@ -282,7 +311,7 @@ class ReflowPoint(ReflowElement):
         NOTE: This only returns _untemplated_ indents. If templated
         newline or whitespace segments are found they are skipped.
         """
-        indent = None
+        indent: Optional[RawSegment] = None
         for seg in reversed(self.segments):
             if seg.pos_marker and not seg.pos_marker.is_literal():
                 # Skip any templated elements.
@@ -319,6 +348,17 @@ class ReflowPoint(ReflowElement):
             # directly via _get_indent_segment.
             return consumed_whitespace.split("\n")[-1]
         return seg.raw if seg else ""
+
+    def get_indent_segment_vals(self, exclude_block_indents=False) -> List[int]:
+        """Iterate through any indent segments and extract their values."""
+        values = []
+        for seg in self.segments:
+            if seg.is_type("indent"):
+                indent_seg = cast(Indent, seg)
+                if exclude_block_indents and indent_seg.block_uuid:
+                    continue
+                values.append(indent_seg.indent_val)
+        return values
 
     @staticmethod
     def _generate_indent_stats(

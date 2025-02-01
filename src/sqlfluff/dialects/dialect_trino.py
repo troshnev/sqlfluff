@@ -36,7 +36,11 @@ ansi_dialect = load_raw_dialect("ansi")
 trino_dialect = ansi_dialect.copy_as(
     "trino",
     formatted_name="Trino",
-    docstring="""**Default Casing**: ``UPPERCASE``
+    docstring="""**Default Casing**: ``lowercase``, although the case
+of a reference is used in the result set column label. If a column is defined
+using :code:`CREATE TEMPORARY TABLE foo (COL1 int)`, then :code:`SELECT * FROM foo`
+returns a column labelled :code:`col1`, however :code:`SELECT COL1 FROM foo`
+returns a column labelled :code:`COL1`.
 
 **Quotes**: String Literals: ``''``, Identifiers: ``""``
 
@@ -69,10 +73,16 @@ trino_dialect.insert_lexer_matchers(
 
 trino_dialect.add(
     RightArrowOperator=StringParser("->", SymbolSegment, type="binary_operator"),
+    LambdaArrowSegment=StringParser("->", SymbolSegment, type="lambda_arrow"),
     StartAngleBracketSegment=StringParser(
         "<", SymbolSegment, type="start_angle_bracket"
     ),
     EndAngleBracketSegment=StringParser(">", SymbolSegment, type="end_angle_bracket"),
+    FormatJsonEncodingGrammar=Sequence(
+        "FORMAT",
+        "JSON",
+        Sequence("ENCODING", OneOf("UTF8", "UTF16", "UTF32"), optional=True),
+    ),
 )
 
 trino_dialect.bracket_sets("angle_bracket_pairs").update(
@@ -217,6 +227,24 @@ trino_dialect.replace(
                 Ref("ColumnReferenceSegment"),
             ),
         ),
+        # For JSON_QUERY function
+        # https://trino.io/docs/current/functions/json.html#json-query
+        Sequence(
+            Ref("ExpressionSegment"),  # json_input
+            Ref("FormatJsonEncodingGrammar", optional=True),
+            Ref("CommaSegment"),
+            Ref("ExpressionSegment"),  # json_path
+            OneOf(
+                Sequence("WITHOUT", Ref.keyword("ARRAY", optional=True), "WRAPPER"),
+                Sequence(
+                    "WITH",
+                    OneOf("CONDITIONAL", "UNCONDITIONAL", optional=True),
+                    Ref.keyword("ARRAY", optional=True),
+                    "WRAPPER",
+                ),
+                optional=True,
+            ),
+        ),
         Ref("IgnoreRespectNullsGrammar"),
         Ref("IndexColumnDefinitionSegment"),
         Ref("EmptyStructLiteralSegment"),
@@ -230,10 +258,20 @@ trino_dialect.replace(
         # Add arrow operators for functions (e.g. regexp_replace)
         Ref("RightArrowOperator"),
     ),
+    AccessorGrammar=AnyNumberOf(
+        Ref("ArrayAccessorSegment"),
+        # Add in semi structured expressions
+        Ref("SemiStructuredAccessorSegment"),
+    ),
     # match ANSI's naked identifier casefold, trino is case-insensitive.
     QuotedIdentifierSegment=TypedParser(
         "double_quote", IdentifierSegment, type="quoted_identifier", casefold=str.upper
     ),
+    FunctionContentsExpressionGrammar=OneOf(
+        Ref("LambdaExpressionSegment"),
+        Ref("ExpressionSegment"),
+    ),
+    TemporaryTransientGrammar=Nothing(),
 )
 
 
@@ -270,11 +308,7 @@ class DatatypeSegment(BaseSegment):
         "JSON",
         # Date and time
         "DATE",
-        Sequence(
-            OneOf("TIME", "TIMESTAMP"),
-            Ref("BracketedArguments", optional=True),
-            Sequence(OneOf("WITH", "WITHOUT"), "TIME", "ZONE", optional=True),
-        ),
+        Ref("TimeWithTZGrammar"),
         # Structural
         Ref("ArrayTypeSegment"),
         "MAP",
@@ -313,6 +347,27 @@ class RowTypeSchemaSegment(BaseSegment):
                 )
             )
         )
+    )
+
+
+class SemiStructuredAccessorSegment(BaseSegment):
+    """A semi-structured data accessor segment."""
+
+    type = "semi_structured_expression"
+    match_grammar = Sequence(
+        Ref("DotSegment"),
+        Ref("SingleIdentifierGrammar"),
+        Ref("ArrayAccessorSegment", optional=True),
+        AnyNumberOf(
+            Sequence(
+                Ref("DotSegment"),
+                Ref("SingleIdentifierGrammar"),
+                allow_gaps=True,
+            ),
+            Ref("ArrayAccessorSegment", optional=True),
+            allow_gaps=True,
+        ),
+        allow_gaps=True,
     )
 
 
@@ -574,4 +629,18 @@ class CommentOnStatementSegment(BaseSegment):
             ),
             Sequence("IS", OneOf(Ref("QuotedLiteralSegment"), "NULL")),
         ),
+    )
+
+
+class LambdaExpressionSegment(BaseSegment):
+    """Lambda function used in a function."""
+
+    type = "lambda_function"
+    match_grammar = Sequence(
+        OneOf(
+            Ref("ParameterNameSegment"),
+            Bracketed(Delimited(Ref("ParameterNameSegment"))),
+        ),
+        Ref("LambdaArrowSegment"),
+        Ref("ExpressionSegment"),
     )

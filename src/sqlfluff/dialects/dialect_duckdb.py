@@ -13,6 +13,7 @@ from sqlfluff.core.parser import (
     Dedent,
     Delimited,
     IdentifierSegment,
+    ImplicitIndent,
     Indent,
     Matchable,
     Nothing,
@@ -62,6 +63,7 @@ duckdb_dialect.sets("unreserved_keywords").update(
         "ANTI",
         "ASOF",
         "MACRO",
+        "MAP",
         "POSITIONAL",
         "SEMI",
         "STRUCT",
@@ -201,6 +203,26 @@ class StructTypeSchemaSegment(BaseSegment):
                     ),
                 ),
             ),
+        ),
+    )
+
+
+class MapTypeSegment(ansi.MapTypeSegment):
+    """Expression to construct a MAP datatype."""
+
+    match_grammar = Sequence(
+        "MAP",
+        Ref("MapTypeSchemaSegment", optional=True),
+    )
+
+
+class MapTypeSchemaSegment(BaseSegment):
+    """Expression to construct the schema of a MAP datatype."""
+
+    type = "map_type_schema"
+    match_grammar = Bracketed(
+        Delimited(
+            Ref("DatatypeSegment"),
         ),
     )
 
@@ -380,21 +402,6 @@ class ColumnsExpressionFunctionContentsSegment(
     )
 
 
-class NamedArgumentSegment(postgres.NamedArgumentSegment):
-    """Named argument to a function.
-
-    Some functions may use a `walrus operator`.
-    e.g. https://duckdb.org/docs/sql/functions/struct#struct_packname--any-
-    """
-
-    type = "named_argument"
-    match_grammar = Sequence(
-        Ref("NakedIdentifierSegment"),
-        OneOf(Ref("RightArrowSegment"), Ref("WalrusOperatorSegment")),
-        Ref("ExpressionSegment"),
-    )
-
-
 class LambdaExpressionSegment(BaseSegment):
     """Lambda function used in a function or columns expression.
 
@@ -556,7 +563,7 @@ class QualifyClauseSegment(BaseSegment):
     type = "qualify_clause"
     match_grammar = Sequence(
         "QUALIFY",
-        Indent,
+        ImplicitIndent,
         OptionallyBracketed(Ref("ExpressionSegment")),
         Dedent,
     )
@@ -770,6 +777,22 @@ class CreateFunctionStatementSegment(postgres.CreateFunctionStatementSegment):
             Sequence("TABLE", Indent, Ref("SelectableGrammar"), Dedent),
             Ref("ExpressionSegment"),
         ),
+    )
+
+
+class DropFunctionStatementSegment(postgres.DropFunctionStatementSegment):
+    """A `DROP MACRO` or `DROP FUNCTION` statement.
+
+    https://duckdb.org/docs/sql/statements/drop.html
+    """
+
+    match_grammar = Sequence(
+        "DROP",
+        OneOf("MACRO", "FUNCTION"),
+        Ref.keyword("TABLE", optional=True),
+        Ref("IfExistsGrammar", optional=True),
+        Ref("FunctionNameSegment"),
+        Ref("DropBehaviorGrammar", optional=True),
     )
 
 

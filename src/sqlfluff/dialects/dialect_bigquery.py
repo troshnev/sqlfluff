@@ -18,6 +18,7 @@ from sqlfluff.core.parser import (
     Dedent,
     Delimited,
     IdentifierSegment,
+    ImplicitIndent,
     Indent,
     LiteralSegment,
     Matchable,
@@ -46,14 +47,21 @@ ansi_dialect = load_raw_dialect("ansi")
 bigquery_dialect = ansi_dialect.copy_as(
     "bigquery",
     formatted_name="Google BigQuery",
-    docstring="""**Default Casing**: ``UPPERCASE``
+    docstring="""**Default Casing**: BigQuery resolves unquoted column
+identifiers case insensitively, and table/dataset identifiers case
+sensitively (by default, unless :code:`is_case_insensitive` is set for
+the latter). Unless specified, columns are returned in the case which
+they were defined in, which means columns can be re-cased in the result
+set without aliasing e.g. if a table is defined with
+:code:`CREATE TEMPORARY TABLE foo (col1 int, COL2 int)` then
+:code:`SELECT * FROM foo` returns :code:`col1` and :code:`COL2` in the
+result, but :code:`SELECT COL1, col2 FROM foo` returns :code:`COL1` and
+:code:`col2` in the result.
 
 **Quotes**: String Literals: ``''``, ``""``, ``@`` or ``@@`` (with the
 quoted options, also supporting variants prefixes with ``r``/``R`` (for
 raw/regex expressions) or ``b``/``B`` (for byte strings)),
-Identifiers: ``""`` or |back_quotes|. Note that *unquoted* aliases are
-resolved case-insensitively but *rendered case-sensitively* in the result
-set.
+Identifiers: ``""`` or |back_quotes|.
 
 The dialect for `BigQuery <https://cloud.google.com/bigquery/>`_
 on Google Cloud Platform (GCP).""",
@@ -72,7 +80,7 @@ bigquery_dialect.insert_lexer_matchers(
         ),
         RegexLexer(
             "double_at_sign_literal",
-            r"@@[a-zA-Z_][\w]*",
+            r"@@[a-zA-Z_][\w\.]*",
             LiteralSegment,
             segment_kwargs={"trim_chars": ("@@",)},
         ),
@@ -316,6 +324,8 @@ bigquery_dialect.replace(
         Ref("SemiStructuredAccessorSegment"),
     ),
     BracketedSetExpressionGrammar=Bracketed(Ref("SetExpressionSegment")),
+    NotEnforcedGrammar=Sequence("NOT", "ENFORCED"),
+    ReferenceMatchGrammar=Nothing(),
 )
 
 
@@ -424,7 +434,7 @@ class QualifyClauseSegment(BaseSegment):
     type = "qualify_clause"
     match_grammar = Sequence(
         "QUALIFY",
-        Indent,
+        ImplicitIndent,
         OptionallyBracketed(Ref("ExpressionSegment")),
         Dedent,
     )
@@ -513,6 +523,7 @@ class StatementSegment(ansi.StatementSegment):
             Ref("DeclareStatementSegment"),
             Ref("SetStatementSegment"),
             Ref("ExportStatementSegment"),
+            Ref("LoadDataStatementSegment"),
             Ref("CreateExternalTableStatementSegment"),
             Ref("CreateSnapshotTableStatementSegment"),
             Ref("ExecuteImmediateSegment"),
@@ -1564,6 +1575,7 @@ class SetStatementSegment(BaseSegment):
         OneOf(
             Ref("NakedIdentifierSegment"),
             Bracketed(Delimited(Ref("NakedIdentifierSegment"))),
+            Ref("SystemVariableSegment"),
         ),
         Ref("EqualsSegment"),
         Delimited(
@@ -1605,6 +1617,7 @@ class ExecuteImmediateSegment(BaseSegment):
                 Ref("SingleIdentifierFullGrammar"),  # Variable
                 Ref("FunctionSegment"),  # Function
                 Ref("CaseExpressionSegment"),  # Conditional Expression
+                Ref("ExpressionSegment"),  # Expression
                 Bracketed(Ref("SelectableGrammar")),  # Expression Subquery
             )
         ),
@@ -2522,7 +2535,7 @@ class MergeNotMatchedBySourceClauseSegment(ansi.MergeMatchedClauseSegment):
     """The `WHEN MATCHED BY SOURCE` clause within a `MERGE` statement.
 
     It inherits from `ansi.MergeMatchedClauseSegment` because NotMatchedBySource clause
-    is conceptionally more close to a Matched clause than to NotMatched clause, i.e.
+    is conceptually more close to a Matched clause than to NotMatched clause, i.e.
     it gets combined with an UPDATE or DELETE, not with an INSERT.
     """
 
@@ -2668,6 +2681,83 @@ class ExportStatementSegment(BaseSegment):
         ),
         "AS",
         Ref("SelectableGrammar"),
+    )
+
+
+class LoadDataStatementSegment(BaseSegment):
+    """`LOAD DATA` statement.
+
+    https://cloud.google.com/bigquery/docs/reference/standard-sql/load-statements
+    """
+
+    type = "load_data_statement"
+    match_grammar: Matchable = Sequence(
+        "LOAD",
+        "DATA",
+        OneOf("INTO", "OVERWRITE"),
+        Sequence(
+            Ref("TemporaryGrammar"),
+            "TABLE",
+            optional=True,
+        ),
+        Ref("TableReferenceSegment"),
+        Sequence(
+            Bracketed(
+                Delimited(
+                    Ref("ColumnDefinitionSegment"),
+                    Ref("TableConstraintSegment"),
+                    allow_trailing=True,
+                )
+            ),
+            optional=True,
+        ),
+        Sequence(
+            Sequence("OVERWRITE", optional=True),
+            "PARTITIONS",
+            Bracketed(
+                Delimited(
+                    Sequence(
+                        Ref("ParameterNameSegment"),
+                        Ref("EqualsSegment"),
+                        Ref("BaseExpressionElementGrammar"),
+                    )
+                )
+            ),
+            optional=True,
+        ),
+        Ref("PartitionBySegment", optional=True),
+        Ref("ClusterBySegment", optional=True),
+        Ref("OptionsSegment", optional=True),
+        Sequence(
+            "FROM",
+            "FILES",
+            Bracketed(
+                Delimited(
+                    Sequence(
+                        Ref("ParameterNameSegment"),
+                        Ref("EqualsSegment"),
+                        Ref("BaseExpressionElementGrammar"),
+                    )
+                )
+            ),
+        ),
+        Sequence(
+            "WITH",
+            "PARTITION",
+            "COLUMNS",
+            Bracketed(
+                Delimited(
+                    Sequence(
+                        Ref("SingleIdentifierGrammar"),  # Column name
+                        Ref("DatatypeSegment"),
+                    ),
+                    allow_trailing=True,
+                ),
+                optional=True,
+            ),
+            optional=True,
+        ),
+        Sequence("WITH", "CONNECTION", Ref("ObjectReferenceSegment"), optional=True),
     )
 
 

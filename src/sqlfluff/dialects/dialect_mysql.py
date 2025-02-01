@@ -213,6 +213,12 @@ mysql_dialect.replace(
         ],
         at=0,
     ),
+    BinaryOperatorGrammar=ansi_dialect.get_grammar("BinaryOperatorGrammar").copy(
+        insert=[
+            Ref("ColumnPathOperatorSegment"),
+            Ref("InlinePathOperatorSegment"),
+        ]
+    ),
     ArithmeticBinaryOperatorGrammar=ansi_dialect.get_grammar(
         "ArithmeticBinaryOperatorGrammar"
     ).copy(
@@ -318,7 +324,7 @@ mysql_dialect.add(
         type="at_sign_literal",
     ),
     SystemVariableSegment=RegexParser(
-        r"@@(session|global)\.[A-Za-z0-9_]+",
+        r"@@((session|global)\.)?[A-Za-z0-9_]+",
         CodeSegment,
         type="system_variable",
     ),
@@ -1276,8 +1282,8 @@ mysql_dialect.insert_lexer_matchers(
 
 mysql_dialect.insert_lexer_matchers(
     [
-        StringLexer("inline_path_operator", "->>", CodeSegment),
-        StringLexer("column_path_operator", "->", CodeSegment),
+        StringLexer("inline_path_operator", "->>", SymbolSegment),
+        StringLexer("column_path_operator", "->", SymbolSegment),
     ],
     before="greater_than",
 )
@@ -1650,6 +1656,8 @@ class AlterTableStatementSegment(BaseSegment):
                     OneOf("DISABLE", "ENABLE"),
                     "KEYS",
                 ),
+                # CONVERT TO CHARACTER SET charset_name [COLLATE collation_name]
+                Sequence("CONVERT", "TO", AnyNumberOf(Ref("AlterOptionSegment"))),
             ),
         ),
     )
@@ -1761,6 +1769,7 @@ class SetAssignmentStatementSegment(BaseSegment):
                     Ref("QuotedLiteralSegment"),
                     Ref("DoubleQuotedLiteralSegment"),
                     Ref("SessionVariableNameSegment"),
+                    Ref("SystemVariableSegment"),
                     # Match boolean keywords before local variables.
                     Ref("BooleanDynamicSystemVariablesGrammar"),
                     Ref("LocalVariableNameSegment"),
@@ -2653,7 +2662,9 @@ class UpdateStatementSegment(BaseSegment):
         "UPDATE",
         Ref.keyword("LOW_PRIORITY", optional=True),
         Ref.keyword("IGNORE", optional=True),
+        Indent,
         Delimited(Ref("TableReferenceSegment"), Ref("FromExpressionSegment")),
+        Dedent,
         Ref("SetClauseListSegment"),
         Ref("WhereClauseSegment", optional=True),
         Ref("OrderByClauseSegment", optional=True),
@@ -2847,30 +2858,6 @@ class DropTriggerStatementSegment(ansi.DropTriggerStatementSegment):
         "TRIGGER",
         Ref("IfExistsGrammar", optional=True),
         Ref("TriggerReferenceSegment"),
-    )
-
-
-class ColumnReferenceSegment(ansi.ColumnReferenceSegment):
-    """A reference to column, field or alias.
-
-    Also allows `column->path` and `column->>path` for JSON values.
-    https://dev.mysql.com/doc/refman/8.0/en/json-search-functions.html#operator_json-column-path
-    """
-
-    match_grammar = ansi.ColumnReferenceSegment.match_grammar.copy(
-        insert=[
-            Sequence(
-                ansi.ColumnReferenceSegment.match_grammar.copy(),
-                OneOf(
-                    Ref("ColumnPathOperatorSegment"),
-                    Ref("InlinePathOperatorSegment"),
-                ),
-                OneOf(
-                    Ref("DoubleQuotedJSONPath"),
-                    Ref("SingleQuotedJSONPath"),
-                ),
-            ),
-        ]
     )
 
 
