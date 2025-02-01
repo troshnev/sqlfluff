@@ -53,7 +53,7 @@ for plugin_rules in get_plugin_manager().hook.get_rules():
 # Write them into a json file for use by redirects.
 print("Rule Docs Generation: Writing Rule JSON...")
 with open(base_path / "source/_partials/rule_list.json", "w", encoding="utf8") as f:
-    json.dump(rule_list, f)
+    json.dump(rule_list, f, ensure_ascii=False)
 
 # Write them into the table. Bundle by bundle.
 print("Rule Docs Generation: Writing Rule Table...")

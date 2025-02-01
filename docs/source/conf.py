@@ -112,7 +112,7 @@ html_theme_options = {
 # https://documatt.gitlab.io/sphinx-reredirects/usage.html
 
 # Load the rule lists to generate rule permalinks
-with open("_partials/rule_list.json", "r") as rule_file:
+with open("_partials/rule_list.json", "r", encoding="utf8") as rule_file:
     rule_list = json.load(rule_file)
 
 redirects = {

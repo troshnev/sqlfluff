@@ -114,7 +114,7 @@ def test__cli__fix_no_corrupt_file_contents(sql, fix_args, expected, tmpdir):
     with tmpdir.as_cwd():
         with pytest.raises(SystemExit):
             fix(fix_args)
-    with open(tmp_path / "testing.sql", "r") as fin:
+    with open(tmp_path / "testing.sql", "r", encoding="utf8") as fin:
         actual = fin.read()
 
     # Ensure no corruption in formatted file

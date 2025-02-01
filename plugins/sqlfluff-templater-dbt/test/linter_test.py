@@ -70,7 +70,7 @@ def test_dbt_target_dir(tmpdir, dbt_project_folder, profiles_dir):
     # "target" directory would incorrectly be created in <<tmp_project_dir>>.
     # (It should be created in <<tmp_project_dir>>/dir1/dir2/dbt/dbt_project.)
     os.chdir(tmp_base_dir)
-    with open(".sqlfluff", "w") as f:
+    with open(".sqlfluff", "w", encoding="utf8") as f:
         print(
             f"""[sqlfluff]
 templater = dbt

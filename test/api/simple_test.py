@@ -477,7 +477,11 @@ def test__api__parse_string():
     assert isinstance(parsed, dict)
 
     # Load in expected result.
-    with open("test/fixtures/api/parse_test/parse_test.json", "r") as f:
+    with open(
+        "test/fixtures/api/parse_test/parse_test.json",
+        mode="r",
+        encoding="utf8",
+    ) as f:
         expected_parsed = json.load(f)
 
     # Compare JSON from parse to expected result.
@@ -506,7 +510,11 @@ Line 1, Position 41: Found unparsable section: 'blah'"""
 def test__api__config_path():
     """Test that we can load a specified config file in the Simple API."""
     # Load test SQL file.
-    with open("test/fixtures/api/config_path_test/config_path_test.sql", "r") as f:
+    with open(
+        "test/fixtures/api/config_path_test/config_path_test.sql",
+        mode="r",
+        encoding="utf8",
+    ) as f:
         sql = f.read()
 
     # Pass a config path to the Simple API.
@@ -516,7 +524,11 @@ def test__api__config_path():
     )
 
     # Load in expected result.
-    with open("test/fixtures/api/config_path_test/config_path_test.json", "r") as f:
+    with open(
+        "test/fixtures/api/config_path_test/config_path_test.json",
+        mode="r",
+        encoding="utf8",
+    ) as f:
         expected_parsed = json.load(f)
 
     # Compare JSON from parse to expected result.
@@ -551,7 +563,11 @@ def test__api__config_override(kwargs, expected, tmpdir):
 def test__api__invalid_dialect():
     """Test that SQLFluffUserError is raised for a bad dialect."""
     # Load test SQL file.
-    with open("test/fixtures/api/config_path_test/config_path_test.sql", "r") as f:
+    with open(
+        "test/fixtures/api/config_path_test/config_path_test.sql",
+        mode="r",
+        encoding="utf8",
+    ) as f:
         sql = f.read()
 
     # Pass a fake dialect to the API and test the correct error is raised.

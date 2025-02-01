@@ -87,7 +87,7 @@ def test__linter__skip_large_bytes(filesize, raises_skip):
 )
 def test__linter__lint_string_vs_file(path):
     """Test the linter finds the same things on strings and files."""
-    with open(path) as f:
+    with open(path, encoding="utf8") as f:
         sql_str = f.read()
     lntr = Linter(dialect="ansi")
     assert (
